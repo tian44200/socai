@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import math
 import time
 from dataclasses import dataclass
@@ -170,7 +169,7 @@ class PageSession:
                     raise
 
     async def navigate(self, url: str, *, wait_until: str = "domcontentloaded", timeout: float = 15.0) -> dict[str, Any]:
-        result = await self.send("Page.navigate", {"url": url})
+        result = await asyncio.wait_for(self.send("Page.navigate", {"url": url}), timeout=max(0.1, float(timeout)))
         if wait_until:
             await self.wait_for_load_state(wait_until, timeout=timeout)
         return result

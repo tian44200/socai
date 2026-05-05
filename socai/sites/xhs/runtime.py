@@ -10,8 +10,9 @@ from pathlib import Path
 from typing import Any
 
 from socai.browser.cdp.page import PageSession
+from socai.media import MediaProcessor
 
-from .entities import XhsNote, XhsNoteCard
+from .entities import XhsAuthorProfile, XhsNote, XhsNoteCard
 
 
 XHS_HOME_URL = "https://www.xiaohongshu.com/explore"
@@ -19,6 +20,7 @@ XHS_PAGE_SCRIPTS_JS = Path(__file__).with_name("page_scripts.js")
 XHS_PAGE_SCRIPT_FUNCTIONS = {
     "note",
     "noteWithWait",
+    "pageState",
     "searchCards",
     "searchInput",
     "setSearchInput",
@@ -30,6 +32,9 @@ XHS_PAGE_SCRIPT_FUNCTIONS = {
     "noteOpen",
     "comments",
     "scrollInNote",
+    "carouselImages",
+    "profileInfo",
+    "profileCards",
 }
 
 
@@ -77,8 +82,9 @@ JS_DISPATCH_ESCAPE = (
 class XhsRuntime:
     """Site-aware operations for Xiaohongshu."""
 
-    def __init__(self, page: PageSession):
+    def __init__(self, page: PageSession, *, media: MediaProcessor | None = None):
         self.page = page
+        self.media = media
         # Track the last note_id we extracted so we can warn the agent if it
         # extracts the same note twice without closing the modal in between —
         # a common failure mode where a stale overlay masks the new card click.
@@ -96,6 +102,10 @@ class XhsRuntime:
             await self.page.navigate(XHS_HOME_URL)
             return
         raise RuntimeError(f"Current page is not Xiaohongshu: {url or 'unknown'}")
+
+    async def detect_state(self) -> dict:
+        await self.ensure_xhs(navigate_if_needed=False)
+        return await self.run_page_script("pageState", expected_type=dict)
 
     async def run_page_script(self, name: str, *, expected_type: type | tuple[type, ...], arg: Any = None) -> Any:
         value = await self.page.evaluate(xhs_page_script_call(name, arg))
@@ -181,7 +191,11 @@ class XhsRuntime:
             "strategy": "manual_submit_failed",
             "state": state,
             "url": await self.current_url(),
-            "error": "Search did not transition to a valid Xiaohongshu result page",
+            "error": (
+                "login_required"
+                if state.get("login_required")
+                else "Search did not transition to a valid Xiaohongshu result page"
+            ),
         }
 
     async def wait_for_search_transition(
@@ -212,6 +226,8 @@ class XhsRuntime:
                     note_id=str(item.get("note_id") or ""),
                     title=str(item.get("title") or ""),
                     author=str(item.get("author") or ""),
+                    author_id=str(item.get("author_id") or ""),
+                    author_url=str(item.get("author_url") or ""),
                     likes=str(item.get("likes") or ""),
                     link=str(item.get("link") or ""),
                     cover_url=str(item.get("cover_url") or ""),
@@ -300,7 +316,11 @@ class XhsRuntime:
             "url": await self.current_url(),
             "state": opened,
             "strategy": "card_click_failed",
-            "error": "Note overlay did not open after card-click attempts; site may be throttling or layout changed",
+            "error": (
+                "login_required"
+                if opened.get("login_required")
+                else "Note overlay did not open after card-click attempts; site may be throttling or layout changed"
+            ),
         }
 
     async def close_note(self, *, wait_seconds: float = 1.5) -> dict:
@@ -382,7 +402,15 @@ class XhsRuntime:
             await asyncio.sleep(max(0.05, float(poll_s)))
         return latest or await self.run_page_script("noteOpen", expected_type=dict)
 
-    async def extract_note(self, *, wait_seconds: float = 8.0) -> XhsNote:
+    async def extract_note(
+        self,
+        *,
+        wait_seconds: float = 8.0,
+        level: str = "lite",
+        include_media: bool = False,
+        max_images: int = 6,
+        max_video_frames: int = 4,
+    ) -> XhsNote:
         """Extract the currently open note.
 
         Uses ``noteWithWait`` so the JS side polls until content has hydrated
@@ -406,6 +434,13 @@ class XhsRuntime:
         if not isinstance(body, dict):
             body = {}
         hashtags = body.get("hashtags") if isinstance(body.get("hashtags"), list) else []
+        image_urls = body.get("image_urls") if isinstance(body.get("image_urls"), list) else []
+        images = [
+            {"url": str(url), "index": index, "is_cover": index == 0}
+            for index, url in enumerate(image_urls[: max(0, int(max_images or 0)) or len(image_urls)])
+            if str(url).strip()
+        ]
+        video = body.get("video") if isinstance(body.get("video"), dict) else {}
         note_id = str(body.get("note_id") or "")
         stale = ""
         if note_id and self._last_extracted_note_id and note_id == self._last_extracted_note_id:
@@ -422,16 +457,70 @@ class XhsRuntime:
             type=str(body.get("type") or ""),
             title=str(body.get("title") or ""),
             author=str(body.get("author") or ""),
+            author_id=str(body.get("author_id") or ""),
+            author_url=str(body.get("author_url") or ""),
             content=str(body.get("content") or ""),
             content_source=str(body.get("content_source") or ""),
             hashtags=[str(tag) for tag in hashtags if str(tag).strip()],
+            date=str(body.get("date") or ""),
+            location=str(body.get("location") or ""),
+            ip_location=str(body.get("ip_location") or ""),
             likes=str(body.get("likes") or ""),
             favorites=str(body.get("favorites") or ""),
             comments_count=str(body.get("comments_count") or ""),
+            shares=str(body.get("shares") or ""),
+            image_count=int(body.get("image_count") or len(images) or 0),
+            images=images,
+            video=video,
+            extraction_level=str(level or "lite"),
         )
+        if include_media:
+            await self._enrich_note_media(note, max_images=max_images, max_video_frames=max_video_frames)
         note.stale_warning = stale
         note.wait_meta = wait_meta
         return note
+
+    async def _enrich_note_media(self, note: XhsNote, *, max_images: int, max_video_frames: int) -> None:
+        if self.media is None:
+            if note.type == "video":
+                note.video = {**(note.video or {}), "media_error": "media processor unavailable"}
+            else:
+                note.images = [{**image, "media_error": "media processor unavailable"} for image in note.images]
+            return
+
+        if note.type == "video":
+            note.video = await asyncio.to_thread(
+                self.media.enrich_video,
+                note.video or {},
+                note_id=note.note_id,
+                title=note.title,
+                referer=note.url,
+                max_frames=max_video_frames,
+                run_vision=True,
+            )
+            return
+
+        if not note.images:
+            urls = await self.collect_carousel_images(max_images=max_images)
+            note.images = [
+                {"url": url, "index": index, "is_cover": index == 0}
+                for index, url in enumerate(urls[:max_images])
+            ]
+            note.image_count = len(note.images)
+        note.images = await asyncio.to_thread(
+            self.media.enrich_images,
+            note.images[:max_images],
+            referer=note.url,
+            label=note.note_id or note.title or "xhs_note",
+            run_vision=True,
+        )
+        note.image_count = len(note.images)
+
+    async def collect_carousel_images(self, *, max_images: int = 12) -> list[str]:
+        await self.ensure_xhs(navigate_if_needed=False)
+        raw = await self.run_page_script("carouselImages", expected_type=dict, arg={"max_images": int(max_images)})
+        urls = raw.get("image_urls") if isinstance(raw, dict) else []
+        return [str(url) for url in urls if str(url).strip()] if isinstance(urls, list) else []
 
     async def extract_comments(
         self,
@@ -478,14 +567,29 @@ class XhsRuntime:
         *,
         note_id: str = "",
         index: int | None = None,
+        level: str = "lite",
         with_comments: bool = True,
         max_comments: int = 12,
+        include_media: bool = False,
+        max_images: int = 6,
+        max_video_frames: int = 4,
     ) -> dict:
         if note_id or index is not None:
             opened = await self.open_note(note_id=note_id, index=index)
             if not opened.get("ok"):
                 return {"ok": False, "open": opened, "error": opened.get("error", "open_failed")}
-        note = await self.extract_note()
+        note = await self.extract_note(
+            level=level,
+            include_media=include_media,
+            max_images=max_images,
+            max_video_frames=max_video_frames,
+        )
+        if note_id and note.note_id and note.note_id != note_id:
+            return {
+                "ok": False,
+                "entity": note.to_dict(),
+                "error": f"stale_note: expected {note_id}, got {note.note_id}",
+            }
         payload: dict[str, Any] = {"ok": True, "entity": note.to_dict()}
         if with_comments:
             try:
@@ -494,6 +598,57 @@ class XhsRuntime:
                 payload["comments"] = []
                 payload["comments_error"] = str(exc)
         return payload
+
+    async def extract_profile(self, *, max_notes: int = 20, scroll_rounds: int = 6) -> XhsAuthorProfile:
+        await self.ensure_xhs(navigate_if_needed=False)
+        state = await self.detect_state()
+        if state.get("state") != "profile_page":
+            raise RuntimeError(f"Current Xiaohongshu page is not a profile page: {state.get('url')}")
+        info = await self.run_page_script("profileInfo", expected_type=dict)
+        cards = await self.extract_profile_cards(max_notes=max_notes, scroll_rounds=scroll_rounds)
+        return XhsAuthorProfile(
+            display_name=str(info.get("display_name") or ""),
+            xhs_id=str(info.get("xhs_id") or ""),
+            profile_url=str(info.get("profile_url") or await self.current_url()),
+            bio=str(info.get("bio") or ""),
+            followers=str(info.get("followers") or ""),
+            following=str(info.get("following") or ""),
+            likes_and_collections=str(info.get("likes_and_collections") or ""),
+            note_cards=cards,
+        )
+
+    async def extract_profile_cards(self, *, max_notes: int = 20, scroll_rounds: int = 6) -> list[XhsNoteCard]:
+        cards: list[XhsNoteCard] = []
+        seen: set[str] = set()
+        for round_index in range(max(1, int(scroll_rounds or 1))):
+            raw = await self.run_page_script("profileCards", expected_type=list)
+            for index, item in enumerate(raw):
+                if not isinstance(item, dict):
+                    continue
+                card = XhsNoteCard(
+                    note_id=str(item.get("note_id") or ""),
+                    title=str(item.get("title") or ""),
+                    author=str(item.get("author") or ""),
+                    author_id=str(item.get("author_id") or ""),
+                    author_url=str(item.get("author_url") or ""),
+                    likes=str(item.get("likes") or ""),
+                    link=str(item.get("link") or ""),
+                    cover_url=str(item.get("cover_url") or ""),
+                    type=str(item.get("type") or ""),
+                    position=int(item.get("position", index) or index),
+                    xsec_token=str(item.get("xsec_token") or ""),
+                )
+                key = card.note_id or card.link or f"pos:{card.position}"
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                cards.append(card)
+                if len(cards) >= max_notes:
+                    return cards
+            if round_index < scroll_rounds - 1:
+                await self.page.scroll(delta_y=900)
+                await asyncio.sleep(0.8)
+        return cards[:max_notes]
 
 
 def extract_note_id_from_url(url: str) -> str:

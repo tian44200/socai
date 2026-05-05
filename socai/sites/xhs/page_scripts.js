@@ -8,6 +8,9 @@ const SocaiXhsPageScripts = (() => {
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+  const absUrl = (url) => {
+    try { return url ? new URL(url, location.href).href : ''; } catch (e) { return ''; }
+  };
 
   function isVisible(el) {
     if (!el) return false;
@@ -115,7 +118,7 @@ const SocaiXhsPageScripts = (() => {
       ...root.querySelectorAll('button, [role="button"], a, div, span, svg, .search-icon, .search-btn, .icon-search'),
       ...document.querySelectorAll('button, [role="button"], a, div, span, svg, .search-icon, .search-btn, .icon-search'),
     ];
-    const ranked = [...new Set(candidates)]
+    const ordered = [...new Set(candidates)]
       .filter((el) => el instanceof HTMLElement || el instanceof SVGElement)
       .map((el) => {
         const clickable = el.closest?.('button, [role="button"], a, div, span') || el;
@@ -143,7 +146,7 @@ const SocaiXhsPageScripts = (() => {
         && score > -140
       ))
       .sort((a, b) => b.score - a.score);
-    const submit = ranked[0] || null;
+    const submit = ordered[0] || null;
     return {
       ok: true,
       input: { x: Math.round(inputRect.left + inputRect.width / 2), y: Math.round(inputRect.top + inputRect.height / 2) },
@@ -170,6 +173,34 @@ const SocaiXhsPageScripts = (() => {
       active_filter: tabs.find((t) => t.active)?.label || '',
       loading,
       has_no_results: hasNoResults,
+      login_required: hasLoginModal(),
+    };
+  }
+
+  function hasLoginModal() {
+    const bodyText = text(document.body);
+    const modal = $$('.login-container, .login-modal, .login-box, [class*="login"]').some((el) => {
+      if (!isVisible(el)) return false;
+      return /手机号登录|扫码|登录后|获取验证码/.test(text(el));
+    });
+    return modal || /手机号登录[\s\S]{0,80}获取验证码|登录后查看搜索结果|登录后推荐更懂你的笔记/.test(bodyText);
+  }
+
+  function pageState() {
+    const url = location.href;
+    let state = 'unknown';
+    if (/xiaohongshu\.com\/user\/profile\//.test(url)) state = 'profile_page';
+    else if (/\/(?:explore|discovery|search_result)\/[^/?#]+/.test(url) || getNoteOverlay()) state = 'note_detail';
+    else if (url.includes('/search_result')) state = 'search_results';
+    else if (/xiaohongshu\.com/.test(url)) state = 'homepage';
+    return {
+      ok: true,
+      state,
+      url,
+      title: document.title,
+      note_open: noteOpen(),
+      search: searchState(),
+      login_required: hasLoginModal(),
     };
   }
 
@@ -187,6 +218,8 @@ const SocaiXhsPageScripts = (() => {
           note_id: id,
           title: card.displayTitle || card.title || '',
           author: card.user?.nickname || card.user?.nickName || '',
+          author_id: card.user?.userId || card.user?.id || '',
+          author_url: card.user?.userId ? `https://www.xiaohongshu.com/user/profile/${card.user.userId}` : '',
           likes: String(card.interactInfo?.likedCount || card.interactInfo?.likes || ''),
           cover_url: card.cover?.urlDefault || card.cover?.urlPre || '',
           type: card.type || '',
@@ -206,10 +239,15 @@ const SocaiXhsPageScripts = (() => {
       const link = linkEl ? linkEl.href : '';
       const idMatch = link.match(/\/(?:explore|search_result|discovery)\/([^/?#]+)/);
       const noteId = card.dataset?.noteId || (idMatch ? idMatch[1] : '');
+      const authorEl = card.querySelector('a[href*="/user/profile/"], .author-wrapper a, .author a');
+      const authorUrl = authorEl ? absUrl(authorEl.href || authorEl.getAttribute('href')) : '';
+      const authorIdMatch = authorUrl.match(/\/user\/profile\/([^/?#]+)/);
       return {
         note_id: noteId,
         title: text(card.querySelector('.title, .note-title, a.title span')),
         author: text(card.querySelector('.author-wrapper .name, .author .name, .nick-name')),
+        author_id: authorIdMatch ? authorIdMatch[1] : '',
+        author_url: authorUrl,
         likes: text(card.querySelector('.like-wrapper .count, .engagement .like .count, .count')),
         cover_url: card.querySelector('.cover img, .note-cover img, img')?.src || '',
         type: card.querySelector('video, .play-icon, .video-icon, svg[class*="video"], .duration') ? 'video' : 'image',
@@ -315,6 +353,7 @@ const SocaiXhsPageScripts = (() => {
       url,
       on_detail_route: /\/(?:explore|discovery|search_result)\/[^/?#]+/.test(url),
       has_modal: !!getNoteOverlay(),
+      login_required: hasLoginModal(),
     };
   }
 
@@ -326,6 +365,76 @@ const SocaiXhsPageScripts = (() => {
   function extractNoteIdFromUrl() {
     const m = location.href.match(/\/(?:explore|discovery|search_result)\/([^/?#]+)/);
     return m ? m[1] : '';
+  }
+
+  function profileIdFromUrl(url) {
+    const m = String(url || location.href).match(/\/user\/profile\/([^/?#]+)/);
+    return m ? m[1] : '';
+  }
+
+  function cleanImageUrl(url) {
+    const value = absUrl(url || '');
+    if (!value || value.startsWith('data:') || value.startsWith('blob:')) return '';
+    return value.replace(/imageView2\/\d\/w\/\d+\/format\/[^/?#]+/i, '');
+  }
+
+  const NOTE_IMAGE_SELECTORS = [
+    '.note-slider img', '.carousel img', '.carousel-image img',
+    '.swiper-slide img', '.media-container img', '.note-detail img',
+    '#noteContainer img',
+  ];
+
+  function collectImageUrls(root) {
+    const urls = [];
+    const seen = new Set();
+    for (const sel of NOTE_IMAGE_SELECTORS) {
+      for (const img of $$(sel, root)) {
+        if (!isVisible(img)) continue;
+        const candidates = [
+          img.currentSrc, img.src, img.getAttribute('src'),
+          img.getAttribute('data-src'), img.getAttribute('data-original'),
+        ];
+        for (const candidate of candidates) {
+          const url = cleanImageUrl(candidate);
+          if (!url || seen.has(url)) continue;
+          seen.add(url);
+          urls.push(url);
+        }
+      }
+    }
+    return urls;
+  }
+
+  function collectVideoInfo(root) {
+    const video = root.querySelector?.('video');
+    const candidates = [];
+    const push = (url, source) => {
+      const value = absUrl(url || '');
+      if (!value || candidates.some((item) => item.url === value)) return;
+      candidates.push({ url: value, source });
+    };
+    if (video) {
+      push(video.currentSrc, 'video.currentSrc');
+      push(video.src, 'video.src');
+      for (const sourceEl of $$('source', video)) push(sourceEl.src || sourceEl.getAttribute('src'), 'source');
+    }
+    try {
+      for (const entry of performance.getEntriesByType('resource')) {
+        const name = String(entry.name || '');
+        if (/(\.mp4|\.m3u8|\.m4v|\.mov)(\?|$)|video|vod|hls|sns-video/i.test(name)) {
+          push(name, 'performance');
+        }
+      }
+    } catch (e) {}
+    const poster = video?.poster || root.querySelector?.('img')?.src || '';
+    return {
+      url: candidates[0]?.url || '',
+      resolved_url: candidates.find((item) => /^https?:/.test(item.url) && !item.url.startsWith('blob:'))?.url || candidates[0]?.url || '',
+      poster_url: cleanImageUrl(poster),
+      duration_s: Number.isFinite(video?.duration) ? video.duration : null,
+      source_urls: candidates.map((item) => item.url),
+      candidates,
+    };
   }
 
   // Stop / ignore line filters for the root-text fallback. Trimmed from
@@ -364,6 +473,8 @@ const SocaiXhsPageScripts = (() => {
       ['.author-container .username', '.author-wrapper .username', '.info .username', '.user-name'],
       root,
     );
+    const authorLink = root.querySelector?.('a[href*="/user/profile/"], .author-container a, .author-wrapper a');
+    const authorUrl = authorLink ? absUrl(authorLink.href || authorLink.getAttribute('href')) : '';
     const contentSelectors = [
       '#detail-desc .note-text', '#detail-desc',
       '.note-content #detail-desc', '.note-scroller #detail-desc',
@@ -388,21 +499,80 @@ const SocaiXhsPageScripts = (() => {
       ['.chat-wrapper .count', '.engage-bar .chat .count', '[data-type="chat"] .count'],
       root, { excludeComments: true },
     );
+    const shares = firstVisibleText(
+      ['.share-wrapper .count', '.engage-bar .share .count', '[data-type="share"] .count'],
+      root, { excludeComments: true },
+    );
     const hashtags = $$('.hash-tag a, a[href*="/page/topics/"], #detail-desc a.tag', root)
       .filter(isVisible).map(text).filter(Boolean);
+    const rootText = norm(text(root));
+    const date = (rootText.match(/\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}-\d{1,2}\b/) || [''])[0];
+    const ipLocation = (rootText.match(/IP属地[:：]?\s*([\u4e00-\u9fffA-Za-z0-9_-]+)/) || [])[1] || '';
+    const locationText = firstVisibleText(['.location, .poi, [class*="location"], [class*="poi"]'], root, { excludeComments: true });
+    const type = detectNoteType(root);
+    const imageUrls = collectImageUrls(root);
+    const video = type === 'video' ? collectVideoInfo(root) : null;
     return {
       note_id: extractNoteIdFromUrl(),
       url: location.href,
-      type: detectNoteType(root),
+      type,
       title,
       author,
+      author_id: profileIdFromUrl(authorUrl),
+      author_url: authorUrl,
       content,
       content_source: contentSource,
+      date,
+      location: locationText,
+      ip_location: ipLocation,
       likes,
       favorites,
       comments_count: commentsCount,
+      shares,
       hashtags,
+      image_count: imageUrls.length,
+      image_urls: imageUrls,
+      video,
     };
+  }
+
+  function carouselImages(opts = {}) {
+    const root = getNoteRoot();
+    const urls = collectImageUrls(root);
+    const max = Number(opts.max_images) || 12;
+    return {
+      ok: true,
+      image_urls: urls.slice(0, max),
+      image_count: urls.length,
+    };
+  }
+
+  function profileInfo() {
+    const displayName = firstVisibleText(
+      ['.user-name', '.profile-name', '.nickname', '.name', 'h1'],
+      document,
+    );
+    const bio = firstVisibleText(['.user-desc', '.profile-desc', '.desc', '.bio'], document);
+    const body = norm(text(document.body));
+    const xhsId = (body.match(/小红书号[:：]?\s*([A-Za-z0-9_.-]+)/) || [])[1] || profileIdFromUrl();
+    const statText = (label) => {
+      const re = new RegExp(`([0-9.,万wWkK+]+)\\s*(?:${label})`);
+      return (body.match(re) || [])[1] || '';
+    };
+    return {
+      ok: true,
+      display_name: displayName,
+      xhs_id: xhsId,
+      profile_url: location.href,
+      bio,
+      followers: statText('粉丝'),
+      following: statText('关注'),
+      likes_and_collections: statText('获赞与收藏|获赞|赞与收藏'),
+    };
+  }
+
+  function profileCards() {
+    return searchCards();
   }
 
   // ── hydration wait — single round-trip Promise loop ──────────
@@ -587,6 +757,7 @@ const SocaiXhsPageScripts = (() => {
   return {
     note,
     noteWithWait,
+    pageState,
     searchCards,
     searchInput,
     setSearchInput,
@@ -598,5 +769,8 @@ const SocaiXhsPageScripts = (() => {
     noteOpen,
     comments,
     scrollInNote,
+    carouselImages,
+    profileInfo,
+    profileCards,
   };
 })();

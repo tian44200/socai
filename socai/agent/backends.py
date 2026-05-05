@@ -326,6 +326,40 @@ def _screenshot_hint_from_text(text: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _openai_content_parts(blocks: list[dict]) -> tuple[list[dict], bool]:
+    parts: list[dict] = []
+    has_media = False
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if kind == "text":
+            text = str(block.get("text", ""))
+            if text:
+                parts.append({"type": "text", "text": text})
+        elif kind == "image":
+            source = block.get("source") if isinstance(block.get("source"), dict) else {}
+            media_type = str(source.get("media_type") or "image/jpeg")
+            data = str(source.get("data") or "")
+            if source.get("type") == "base64" and data:
+                parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{media_type};base64,{data}"},
+                    }
+                )
+                has_media = True
+        elif kind == "image_url":
+            image_url = block.get("image_url")
+            if isinstance(image_url, dict):
+                parts.append({"type": "image_url", "image_url": image_url})
+                has_media = True
+            elif block.get("url"):
+                parts.append({"type": "image_url", "image_url": {"url": str(block["url"])}})
+                has_media = True
+    return parts, has_media
+
+
 def _summarize_result_blocks_for_history(
     blocks: list[dict],
     *,
@@ -542,7 +576,8 @@ class OpenAICompatibleBackend(Backend):
                 return [{"role": "user", "content": text}] if text else []
             if isinstance(content, list):
                 result: list[dict] = []
-                text_parts: list[str] = []
+                user_parts: list[dict] = []
+                has_media = False
                 for item in content:
                     if not isinstance(item, dict):
                         continue
@@ -557,11 +592,19 @@ class OpenAICompatibleBackend(Backend):
                                 "content": self._blocks_to_text(blocks),
                             }
                         )
-                    elif item.get("type") == "text":
-                        text_parts.append(str(item.get("text", "")))
-                joined = "\n".join(part for part in text_parts if part).strip()
-                if joined:
-                    result.append({"role": "user", "content": joined})
+                    else:
+                        parts, part_has_media = _openai_content_parts([item])
+                        user_parts.extend(parts)
+                        has_media = has_media or part_has_media
+                if user_parts:
+                    if has_media:
+                        result.append({"role": "user", "content": user_parts})
+                    else:
+                        joined = "\n".join(
+                            str(part.get("text") or "") for part in user_parts if part.get("type") == "text"
+                        ).strip()
+                        if joined:
+                            result.append({"role": "user", "content": joined})
                 return result
 
         return []

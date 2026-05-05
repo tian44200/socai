@@ -82,6 +82,41 @@ def _compact_memory_entries(entries: list[str], max_chars: int) -> str:
     return "\n".join(reversed(selected))[:max_chars]
 
 
+def _report_with_artifacts(final_text: str, run_path: Path, *, max_images: int = 12) -> str:
+    artifacts_path = run_path / "run_state" / "artifacts.json"
+    if not artifacts_path.exists():
+        return final_text
+    try:
+        payload = json.loads(artifacts_path.read_text(encoding="utf-8"))
+    except Exception:
+        return final_text
+    items = payload.get("items") if isinstance(payload, dict) else []
+    if not isinstance(items, list):
+        return final_text
+
+    screenshots: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        path = str(item.get("path") or "")
+        kind = str(item.get("kind") or "")
+        if kind == "image" and metadata.get("category") == "screenshot" and path:
+            screenshots.append(item)
+
+    if not screenshots:
+        return final_text
+
+    lines = ["", "", "## Artifacts"]
+    for item in screenshots[:max_images]:
+        path = str(item.get("path") or "")
+        summary = str(item.get("summary") or item.get("label") or path).strip()
+        alt = summary.replace("[", "(").replace("]", ")") or "screenshot"
+        lines.append(f"- {summary}")
+        lines.append(f"  ![{alt}]({path})")
+    return final_text.rstrip() + "\n".join(lines) + "\n"
+
+
 def _is_tool_result_message(message: dict) -> bool:
     content = message.get("content")
     if isinstance(content, str):
@@ -161,8 +196,7 @@ async def run_agent(
     run_path = Path(run_dir)
     run_path.mkdir(parents=True, exist_ok=True)
 
-    available_tools = list(tools or [])
-    tool_map = {tool.name: tool for tool in available_tools}
+    all_tools = list(tools or [])
     backend = backend or create_backend(model)
     selected_model = str(model or getattr(backend, "model", "") or "")
     run_state = RunState(run_dir=run_path, task=task, model=selected_model)
@@ -174,8 +208,7 @@ async def run_agent(
             log_callback(event, detail)
 
     messages: list[dict] = [{"role": "user", "content": task}]
-    system_prompt = _build_system_prompt(available_tools, extra_instructions)
-    api_tools = [tool.to_api_schema() for tool in available_tools]
+    system_prompt = _build_system_prompt(all_tools, extra_instructions)
     reasoning_log_path = debug_log.reasoning_log_path
     task_start = time.time()
     final_text = ""
@@ -184,7 +217,7 @@ async def run_agent(
     turn = 0
     completed = False
 
-    debug_log.event("task_start", task=task, model=selected_model, tools=[tool.name for tool in available_tools])
+    debug_log.event("task_start", task=task, model=selected_model, tools=[tool.name for tool in all_tools])
     log("start", task)
 
     while turn < max_turns:
@@ -192,6 +225,10 @@ async def run_agent(
         turn_start = time.time()
         log("turn", f"{turn}/{max_turns}")
 
+        available_tools = [tool for tool in all_tools if tool.is_available(ctx)]
+        tool_map = {tool.name: tool for tool in available_tools}
+        api_tools = [tool.to_api_schema() for tool in available_tools]
+        system_prompt = _build_system_prompt(available_tools, extra_instructions)
         request_messages = _prepare_messages_for_context(messages, run_state, context_memory)
         try:
             response = backend.create_message(
@@ -360,7 +397,7 @@ async def run_agent(
 
     total_duration = round(time.time() - task_start, 2)
     report_path = run_path / "report.md"
-    report_path.write_text(final_text, encoding="utf-8")
+    report_path.write_text(_report_with_artifacts(final_text, run_path), encoding="utf-8")
     conversation_path = debug_log.write_conversation(system_prompt=system_prompt, messages=messages)
     summary = {
         "task": task,

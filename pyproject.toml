@@ -23,4 +23,4 @@ include = ["socai*"]
 
 [tool.setuptools.package-data]
 "socai.browser.tools" = ["page_scripts.js"]
-"socai.sites.xhs" = ["page_scripts.js"]
+"socai.sites.xhs" = ["page_scripts.js", "*.md"]
