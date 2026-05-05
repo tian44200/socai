@@ -102,12 +102,36 @@ def default_model_for_provider(provider: str) -> str:
     return _configured_default_model(provider) or config.default_model
 
 
+_AUTH_WARNED: set[str] = set()
+
+
 def _read_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+        text = path.read_text(encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001 - filesystem boundary
+        _warn_auth_once(str(path), f"could not read {path}: {exc}")
+        return {}
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        _warn_auth_once(
+            str(path),
+            f"{path} is not valid JSON ({exc.msg} at line {exc.lineno} col {exc.colno}). "
+            f"Fix the file or delete it; provider keys saved there are being ignored.",
+        )
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _warn_auth_once(key: str, message: str) -> None:
+    if key in _AUTH_WARNED:
+        return
+    _AUTH_WARNED.add(key)
+    import sys
+
+    print(f"[socai] warning: {message}", file=sys.stderr)
 
 
 def _auth_configs() -> list[tuple[Path, dict]]:
@@ -125,6 +149,10 @@ def save_api_key(provider: str, api_key: str) -> Path:
     secret = str(api_key or "").strip()
     if not secret:
         raise ValueError("API key is required.")
+    if len(secret) < _MIN_API_KEY_LEN:
+        raise ValueError(
+            f"API key looks too short ({len(secret)} chars). Paste the full key."
+        )
 
     data = _read_json(SOCAI_AUTH_FILE)
     provider_block = dict(data.get(provider) or {})
@@ -180,15 +208,23 @@ def _codex_api_key() -> str:
     return str(_read_json(CODEX_AUTH_FILE).get("OPENAI_API_KEY") or "").strip()
 
 
+_MIN_API_KEY_LEN = 8  # any real provider key is far longer; reject whitespace/typo-saved keys
+
+
+def _looks_like_real_key(value: str | None) -> bool:
+    return bool(value and len(value.strip()) >= _MIN_API_KEY_LEN)
+
+
 def _provider_has_key(provider: str) -> bool:
     config = PROVIDERS.get(provider)
     if config is None:
         return False
-    if any(os.environ.get(key, "").strip() for key in config.api_key_env):
+    if any(_looks_like_real_key(os.environ.get(key)) for key in config.api_key_env):
         return True
-    if _configured_secret(provider, "api_key"):
+    configured = _configured_secret(provider, "api_key")
+    if configured and _looks_like_real_key(configured[1]):
         return True
-    return provider == PROVIDER_OPENAI and bool(_codex_api_key())
+    return provider == PROVIDER_OPENAI and _looks_like_real_key(_codex_api_key())
 
 
 def has_any_api_key() -> bool:
@@ -206,12 +242,14 @@ def resolve_model_provider(model: str | None = None, provider: str | None = None
     for name, config in PROVIDERS.items():
         if normalized and any(normalized.startswith(prefix) for prefix in config.model_prefixes):
             return name
-    if configured := _configured_default_provider():
+    # Honor configured default only if it actually has a usable key.
+    configured = _configured_default_provider()
+    if configured and _provider_has_key(configured):
         return configured
     for name in PROVIDERS:
         if _provider_has_key(name):
             return name
-    return PROVIDER_OPENAI
+    return configured or PROVIDER_OPENAI
 
 
 def _api_key_for(config: ProviderConfig) -> str:

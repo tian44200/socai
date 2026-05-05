@@ -12,6 +12,7 @@ import json
 import time
 from pathlib import Path
 
+from .api_errors import format_api_error
 from .backends import Backend, create_backend
 from .run_logging import RunDebugLogger, current_traceback, make_run_dir
 from .run_state import RunState
@@ -200,14 +201,21 @@ async def run_agent(
                 max_tokens=8192,
             )
         except Exception as exc:  # noqa: BLE001 - backend boundary
-            final_text = f"API error: {exc}"
-            debug_log.api_error(turn=turn, error=str(exc))
+            detail = format_api_error(exc)
+            final_text = f"API error: {detail}"
+            debug_log.api_error(turn=turn, error=detail)
+            log("api_error", detail)
             break
 
         messages.append({"role": "assistant", "content": backend.format_assistant_content(response)})
         visible_texts = [text for text in response.text_blocks if not text.startswith("[Thinking] ")]
+        thinking_texts = [text[len("[Thinking] "):] for text in response.text_blocks if text.startswith("[Thinking] ")]
         if visible_texts:
             final_text = "\n".join(visible_texts)
+        if thinking_texts:
+            log("thinking", "\n".join(thinking_texts))
+        if visible_texts:
+            log("assistant_text", "\n".join(visible_texts))
 
         run_state.note_assistant_turn(
             turn=turn,
@@ -238,6 +246,13 @@ async def run_agent(
             history.append(turn)
 
             run_state.note_tool_call(turn=turn, tool_name=tool_name, tool_input=tool_input)
+            try:
+                args_preview = json.dumps(tool_input, ensure_ascii=False)
+            except Exception:  # noqa: BLE001 - logging only
+                args_preview = str(tool_input)
+            if len(args_preview) > 200:
+                args_preview = args_preview[:200] + "…"
+            log("tool_call", f"{tool_name} {args_preview}")
             debug_log.event(
                 "tool_call_start",
                 turn=turn,
@@ -282,6 +297,11 @@ async def run_agent(
                 result_summary=summary,
                 duration_s=duration_s,
             )
+            short_summary = summary if len(summary) <= 240 else summary[:240] + "…"
+            if tool_error:
+                log("tool_error", f"{tool_name}: {tool_error}")
+            else:
+                log("tool_result", f"{tool_name} ({duration_s}s): {short_summary}")
             context_memory.append(
                 f"- turn {turn} {tool_name}({json.dumps(tool_input, ensure_ascii=False)[:160]}): {summary}"
             )
