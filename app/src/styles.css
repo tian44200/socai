@@ -1,0 +1,206 @@
+/* socai design tokens — monochrome.
+   Vercel/Geist-style: pure black on near-white, generous space, no chroma.
+   Source: design system v1 (colors_and_type.css). */
+
+@import url('https://api.fontshare.com/v2/css?f[]=general-sans@200,300,400,500,600,700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&display=swap');
+
+:root {
+  /* ── Ink scale ────────────────────────────────────────────────── */
+  --ink-0:   #000000;        /* true black — display headlines, primary CTA fill */
+  --ink-1:   #0a0a0a;        /* body */
+  --ink-2:   #404040;        /* secondary text */
+  --ink-3:   #737373;        /* tertiary, captions, eyebrows */
+  --ink-4:   #a3a3a3;        /* placeholders, disabled */
+  --ink-5:   #d4d4d4;        /* hairlines on dark */
+  --ink-6:   #e5e5e5;        /* hairlines on light */
+  --ink-7:   #f4f4f4;        /* hover wash, sub-card fill */
+  --ink-8:   #fafaf9;        /* canvas — warm-leaning paper */
+  --ink-9:   #ffffff;        /* card surface */
+
+  /* ── Semantic ─────────────────────────────────────────────────── */
+  --canvas:    var(--ink-8);
+  --surface:   var(--ink-9);
+  --surface-2: var(--ink-7);
+  --fg:        var(--ink-1);
+  --fg-muted:  var(--ink-2);
+  --fg-soft:   var(--ink-3);
+  --fg-faint:  var(--ink-4);
+  --line:      var(--ink-6);
+  --line-strong: var(--ink-5);
+
+  /* The single accent — true ink. We keep ONE accent and it is black. */
+  --accent:        var(--ink-0);
+  --accent-fg:     var(--ink-9);
+  --focus-ring:    rgba(0,0,0,0.18);
+
+  /* Status — used only for badges/diagnostics, never ornamental. */
+  --status-success-fg: var(--ink-0);
+  --status-pending-fg: var(--ink-3);
+  --status-error-fg:   var(--ink-1);
+
+  /* ── Type ─────────────────────────────────────────────────────── */
+  --font-sans: "General Sans", ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --ls-display:  -0.025em;
+  --ls-eyebrow:  0.04em;
+  --ls-mono:     -0.005em;
+
+  /* ── Space scale (8px base) ───────────────────────────────────── */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+  --sp-9: 96px;
+  --sp-10: 128px;
+
+  /* ── Radii ────────────────────────────────────────────────────── */
+  --r-1: 2px;
+  --r-2: 4px;
+  --r-3: 6px;
+  --r-4: 8px;
+  --r-5: 12px;
+  --r-pill: 999px;
+
+  /* ── Borders ──────────────────────────────────────────────────── */
+  --hairline: 1px solid var(--line);
+  --hairline-strong: 1px solid var(--line-strong);
+
+  /* ── Shadows — almost none. Only 1 elevation token. ───────────── */
+  --shadow-pop: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.05);
+
+  /* ── Motion ───────────────────────────────────────────────────── */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --t-fast: 120ms;
+  --t-base: 200ms;
+
+  /* ── Paper texture ────────────────────────────────────────────── */
+  --paper-noise: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.045 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+
+/* ── Base ─────────────────────────────────────────────────────────── */
+* { box-sizing: border-box; }
+
+html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+html, body { margin: 0; padding: 0; min-height: 100vh; }
+
+body {
+  background: var(--canvas);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.55;
+  font-feature-settings: "ss01", "ss02", "cv11";
+}
+
+body.has-paper::before {
+  content: "";
+  position: fixed; inset: 0;
+  background-image: var(--paper-noise);
+  pointer-events: none;
+  mix-blend-mode: multiply;
+  opacity: 1;
+  z-index: 0;
+}
+body.has-paper > * { position: relative; z-index: 1; }
+
+#app { min-height: 100vh; display: flex; }
+
+/* ── Type system ──────────────────────────────────────────────── */
+.t-display {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: clamp(40px, 5vw, 64px);
+  line-height: 1.02;
+  letter-spacing: var(--ls-display);
+  color: var(--ink-0);
+}
+.t-h1 {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 36px;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--ink-0);
+}
+.t-h2 {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 24px;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+  color: var(--ink-0);
+}
+.t-h3 {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 16px;
+  line-height: 1.3;
+  letter-spacing: -0.005em;
+  color: var(--ink-1);
+}
+.t-lede {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: 18px;
+  line-height: 1.55;
+  color: var(--fg-muted);
+}
+.t-body {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+}
+.t-small {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-soft);
+}
+.t-eyebrow {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+  color: var(--fg-soft);
+}
+.t-mono {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: var(--ls-mono);
+  color: var(--fg-muted);
+}
+
+/* ── Page: boilerplate hero ───────────────────────────────────── */
+.hero {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-5);
+  padding: var(--sp-9) var(--sp-6);
+  text-align: center;
+}
+.hero-mark {
+  color: var(--ink-0);
+  display: inline-flex;
+}
+.hero-mark svg { display: block; }
+.hero .t-display,
+.hero .t-lede {
+  margin: 0;
+}
+.hero .t-lede {
+  max-width: 38ch;
+}
