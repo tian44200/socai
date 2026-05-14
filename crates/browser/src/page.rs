@@ -72,6 +72,10 @@ fn wrap_expression(expression: &str) -> String {
 /// and block comments. Direct port of the Python heuristic — handles the
 /// common case where the user writes multi-line JS with a `return` at the
 /// end and expects it to behave like a function body.
+///
+/// Iterates by char index, not byte index, so multi-byte UTF-8 (e.g. the
+/// non-breaking space '\u{a0}' that appears in real-world JS bundles)
+/// doesn't trip char-boundary panics on slicing.
 fn has_top_level_return(src: &str) -> bool {
     #[derive(Clone, Copy)]
     enum S {
@@ -80,12 +84,12 @@ fn has_top_level_return(src: &str) -> bool {
         Block,
         Str(char),
     }
-    let bytes = src.as_bytes();
-    let mut i = 0;
+    let chars: Vec<(usize, char)> = src.char_indices().collect();
     let mut state = S::Code;
-    while i < bytes.len() {
-        let c = bytes[i] as char;
-        let n = bytes.get(i + 1).map(|b| *b as char).unwrap_or('\0');
+    let mut i = 0;
+    while i < chars.len() {
+        let (byte_idx, c) = chars[i];
+        let n = chars.get(i + 1).map(|(_, ch)| *ch).unwrap_or('\0');
         match state {
             S::Code => {
                 if c == '"' || c == '\'' || c == '`' {
@@ -103,9 +107,9 @@ fn has_top_level_return(src: &str) -> bool {
                     i += 2;
                     continue;
                 }
-                if src[i..].starts_with("return") {
-                    let before = if i > 0 { bytes[i - 1] as char } else { ' ' };
-                    let after = bytes.get(i + 6).map(|b| *b as char).unwrap_or(' ');
+                if c == 'r' && src[byte_idx..].starts_with("return") {
+                    let before = if i > 0 { chars[i - 1].1 } else { ' ' };
+                    let after = chars.get(i + 6).map(|(_, ch)| *ch).unwrap_or(' ');
                     let before_ok = !(before.is_alphanumeric() || before == '_');
                     let after_ok = !(after.is_alphanumeric() || after == '_');
                     if before_ok && after_ok {
@@ -169,6 +173,19 @@ mod tests {
     fn return_inside_word_ignored() {
         assert!(!has_top_level_return("noreturn"));
         assert!(!has_top_level_return("return_value"));
+    }
+
+    #[test]
+    fn handles_non_ascii_chars() {
+        // Regression: \u{a0} is non-breaking space (2 bytes in UTF-8). The
+        // previous byte-indexing scanner panicked here when slicing through
+        // its first byte. The real-world trigger was the XHS page_scripts.js
+        // bundle, which uses \u{a0} in a string literal.
+        assert!(!has_top_level_return("const s = '\u{a0}';"));
+        assert!(has_top_level_return(
+            "const s = '\u{a0}'; const x = 1; return x;"
+        ));
+        assert!(has_top_level_return("// 中文注释\nreturn 1;"));
     }
 
     #[test]

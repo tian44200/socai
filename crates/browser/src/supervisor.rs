@@ -83,7 +83,7 @@ async fn try_connect_once(cdp: &Cdp) -> anyhow::Result<()> {
     let (browser, mut handler) = Browser::connect(&endpoint.browser_ws_url).await?;
 
     let cdp_for_pump = cdp.clone();
-    tokio::spawn(async move {
+    let pump = tokio::spawn(async move {
         // Handler stream yields Result<_, CdpError>. Individual decode errors
         // are non-fatal — only stream exhaustion (None) means the WS closed.
         while let Some(event) = handler.next().await {
@@ -93,6 +93,7 @@ async fn try_connect_once(cdp: &Cdp) -> anyhow::Result<()> {
         }
         on_connection_dropped(cdp_for_pump).await;
     });
+    let handler_task = pump.abort_handle();
 
     let version = browser.version().await?;
     let browser_version = format!("{} v{}", version.product, version.revision);
@@ -122,6 +123,7 @@ async fn try_connect_once(cdp: &Cdp) -> anyhow::Result<()> {
         }
         *guard = CdpState::Connected {
             browser: Arc::clone(&browser),
+            handler_task,
             endpoint,
             browser_version,
             targets,
@@ -170,9 +172,21 @@ async fn transition_if_eligible(cdp: &Cdp, new: CdpState) -> bool {
 async fn transition_unconditional(cdp: &Cdp, new: CdpState) {
     let state = cdp.state();
     let mut guard = state.lock().await;
+    abort_pump_if_connected(&guard);
     *guard = new;
     let payload: StatusPayload = (&*guard).into();
     cdp.emit(BrowserEvent::StatusChanged(payload));
+}
+
+/// On user-initiated disconnect we have to terminate the WS pump task — its
+/// `Handler` owns the WebSocket, so dropping the `Arc<Browser>` alone won't
+/// close the socket. Aborting causes the task to be dropped, which drops the
+/// `Handler`, which closes the WS — only then does Chrome remove the
+/// "controlled by automated software" banner.
+fn abort_pump_if_connected(state: &CdpState) {
+    if let CdpState::Connected { handler_task, .. } = state {
+        handler_task.abort();
+    }
 }
 
 /// Subscribe to Target.* events from chromiumoxide; fold them into the cached

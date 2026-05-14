@@ -12,3 +12,6 @@ app/src-tauri/gen/
 
 # Rust workspace
 target/
+
+# Parity scratch runs (commit fixtures intentionally, not ad-hoc smoke runs)
+parity/phase1_smoke/

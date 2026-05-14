@@ -28,6 +28,11 @@ pub enum CdpState {
     Connected {
         #[allow(dead_code)] // held to tie WS lifetime to the variant
         browser: Arc<Browser>,
+        /// Abort handle for the spawned WS pump task. On user disconnect we
+        /// must abort it so the underlying WebSocket actually closes — Chrome
+        /// keeps the "controlled by automated software" banner up until every
+        /// CDP client disconnects.
+        handler_task: tokio::task::AbortHandle,
         endpoint: Endpoint,
         browser_version: String,
         targets: HashMap<String, TargetInfo>,

@@ -64,6 +64,13 @@ Rules:
   Bumping one requires bumping the other in the same commit; Tauri CLI hard-
   fails on minor drift.
 
+## Parity testing
+
+Cross-language parity tests between the Python and Rust implementations live
+in `parity/`. Agent workflow rules (run commands yourself, save outputs under
+`parity/<scenario>/` not `/tmp/`, handle the Chrome remote-debugging approval
+popup via the computer-use tool) are documented in `parity/AGENTS.md`.
+
 Regenerating the app icon — edit `branding/app-icon.svg`, then from `app/`:
 
 ```bash

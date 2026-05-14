@@ -13,10 +13,14 @@ use socai_browser::{Cdp, TaskSessionManager};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // chromiumoxide=off silences upstream `error!` spam from WS messages whose
+    // shape chromiumoxide's PDL doesn't model (common with newer Chrome
+    // versions — non-fatal, the actual CDP commands still work). Set
+    // RUST_LOG explicitly to re-enable.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+                .unwrap_or_else(|_| "info,chromiumoxide=off".into()),
         )
         .init();
 
