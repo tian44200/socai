@@ -1,1 +1,9 @@
-// socai-browser: CDP session, page primitives, task tabs. Phase 1 lands here.
+pub mod endpoint;
+pub mod state;
+pub mod supervisor;
+
+pub use endpoint::{
+    discover_existing_chrome_endpoint, open_remote_debugging_page, resolve_explicit_endpoint,
+    wait_for_existing_chrome_endpoint, Endpoint,
+};
+pub use state::{BrowserEvent, Cdp, CdpState, StatusPayload, TargetInfo};
