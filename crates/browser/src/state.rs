@@ -125,6 +125,31 @@ impl Cdp {
         }
     }
 
+    /// Block until status transitions to Connected, or surface Disconnected
+    /// as an error. Subscribes before checking current state so we never miss
+    /// an event that fires between subscribe and check.
+    pub async fn wait_connected(&self) -> anyhow::Result<()> {
+        let mut rx = self.subscribe();
+        if let StatusPayload::Connected { .. } = self.status().await {
+            return Ok(());
+        }
+        loop {
+            match rx.recv().await {
+                Ok(BrowserEvent::StatusChanged(StatusPayload::Connected { .. })) => {
+                    return Ok(())
+                }
+                Ok(BrowserEvent::StatusChanged(StatusPayload::Disconnected { reason })) => {
+                    return Err(anyhow::anyhow!("disconnected: {reason}"));
+                }
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(anyhow::anyhow!("event channel closed"));
+                }
+            }
+        }
+    }
+
     pub(crate) fn state(&self) -> Arc<Mutex<CdpState>> {
         Arc::clone(&self.state)
     }
