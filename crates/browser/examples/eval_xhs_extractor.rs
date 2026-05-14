@@ -18,7 +18,7 @@ use std::path::Path;
 use serde_json::Value;
 use socai_browser::{Cdp, PageSession, TaskSessionManager};
 
-const SCRIPTS_RELATIVE_PATH: &str = "socai/sites/xhs/page_scripts.js";
+const SCRIPTS_RELATIVE_PATH: &str = "crates/sites/src/xhs/page_scripts.js";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -29,9 +29,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let url = env::args().nth(1).ok_or_else(|| {
-        anyhow::anyhow!("usage: eval_xhs_extractor <url> [function] [arg_json]")
-    })?;
+    let url = env::args()
+        .nth(1)
+        .ok_or_else(|| anyhow::anyhow!("usage: eval_xhs_extractor <url> [function] [arg_json]"))?;
     let function = env::args().nth(2).unwrap_or_else(|| "pageState".into());
     let arg_json = env::args().nth(3).unwrap_or_else(|| "null".into());
 
@@ -43,7 +43,8 @@ async fn main() -> anyhow::Result<()> {
     cdp.wait_connected().await?;
 
     let tasks = TaskSessionManager::new(cdp.clone());
-    let page = tasks.create_task(&url).await?;
+    let page = tasks.create_task("about:blank").await?;
+    page.navigate_with_timeout(&url, 20.0).await?;
 
     let value = eval_xhs_function(&page, &scripts, &function, &arg_json).await?;
     println!("{}", serde_json::to_string_pretty(&value)?);

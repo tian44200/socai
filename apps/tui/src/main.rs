@@ -1,4 +1,5 @@
 fn main() -> anyhow::Result<()> {
-    println!("socai-tui: phase 0 skeleton");
+    let _runtime = socai_runtime::SocaiRuntime::new();
+    println!("socai-tui: runtime shell skeleton");
     Ok(())
 }

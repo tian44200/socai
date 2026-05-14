@@ -41,6 +41,21 @@ pub struct XhsNote {
     pub stale_warning: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct XhsNoteCard {
+    pub note_id: String,
+    pub title: String,
+    pub author: String,
+    pub author_id: String,
+    pub author_url: String,
+    pub likes: String,
+    pub link: String,
+    pub cover_url: String,
+    pub r#type: String,
+    pub position: i64,
+    pub xsec_token: String,
+}
+
 impl Default for XhsNote {
     fn default() -> Self {
         Self {

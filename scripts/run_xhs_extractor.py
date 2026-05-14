@@ -43,7 +43,9 @@ async def main() -> int:
         return 1
     browser = await BrowserSession.connect(endpoint=endpoint)
     try:
-        page = await browser.new_page(args.url, wait_for_load=True)
+        created = await browser.send("Target.createTarget", {"url": "about:blank"})
+        page = await browser.attach_page(str(created["targetId"]))
+        await page.navigate(args.url, timeout=20.0)
         try:
             js = xhs_page_script_call(args.function, arg)
             value = await page.evaluate(js)

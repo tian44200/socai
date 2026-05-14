@@ -386,7 +386,9 @@ const SocaiXhsPageScripts = (() => {
     const value = absUrl(url || '');
     if (!value || value.startsWith('data:') || value.startsWith('blob:')) return '';
     if (NON_NOTE_IMAGE_PATTERNS.some((re) => re.test(value))) return '';
-    return value.replace(/imageView2\/\d\/w\/\d+\/format\/[^/?#]+/i, '');
+    return value
+      .replace(/^http:\/\//i, 'https://')
+      .replace(/imageView2\/\d\/w\/\d+\/format\/[^/?#]+/i, '');
   }
 
   const NOTE_IMAGE_SELECTORS = [
@@ -418,6 +420,21 @@ const SocaiXhsPageScripts = (() => {
       }
     }
     return urls;
+  }
+
+  function cleanLocationText(value) {
+    const cleaned = norm(value);
+    if (!cleaned) return '';
+    const lines = cleaned.split(/\n+/).map(norm).filter(Boolean);
+    if (!lines.length) return '';
+    // iPhone Live Photo badges render as visible overlay text in the media
+    // area; they are not note locations/POIs.
+    if (lines.every((line) => /^live$/i.test(line))) return '';
+    if (/^live(?:\s+live)+$/i.test(lines.join(' '))) return '';
+    // Real note locations are compact labels like "北京"; multi-line blobs
+    // here are almost always media overlay or layout noise.
+    if (lines.length > 1 || cleaned.length > 40) return '';
+    return cleaned;
   }
 
   function collectVideoInfo(root) {
@@ -523,7 +540,9 @@ const SocaiXhsPageScripts = (() => {
     const rootText = norm(text(root));
     const date = (rootText.match(/\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}-\d{1,2}\b/) || [''])[0];
     const ipLocation = (rootText.match(/IP属地[:：]?\s*([\u4e00-\u9fffA-Za-z0-9_-]+)/) || [])[1] || '';
-    const locationText = firstVisibleText(['.location, .poi, [class*="location"], [class*="poi"]'], root, { excludeComments: true });
+    const locationText = cleanLocationText(
+      firstVisibleText(['.location, .poi, [class*="location"], [class*="poi"]'], root, { excludeComments: true })
+    );
     const type = detectNoteType(root);
     const imageUrls = collectImageUrls(root);
     const video = type === 'video' ? collectVideoInfo(root) : null;

@@ -1,26 +1,28 @@
-use socai_browser::{Cdp, StatusPayload, TargetInfo, TaskSessionManager};
+use socai_runtime::{BrowserStatus, BrowserTargetInfo, SocaiRuntime};
 use tauri::State;
 
 #[tauri::command]
-pub async fn cdp_connect(cdp: State<'_, Cdp>) -> Result<(), String> {
-    cdp.connect();
+pub async fn cdp_connect(runtime: State<'_, SocaiRuntime>) -> Result<(), String> {
+    runtime.connect_browser();
     Ok(())
 }
 
 #[tauri::command]
-pub async fn cdp_disconnect(cdp: State<'_, Cdp>) -> Result<(), String> {
-    cdp.disconnect().await;
+pub async fn cdp_disconnect(runtime: State<'_, SocaiRuntime>) -> Result<(), String> {
+    runtime.disconnect_browser().await;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn cdp_status(cdp: State<'_, Cdp>) -> Result<StatusPayload, String> {
-    Ok(cdp.status().await)
+pub async fn cdp_status(runtime: State<'_, SocaiRuntime>) -> Result<BrowserStatus, String> {
+    Ok(runtime.browser_status().await)
 }
 
 #[tauri::command]
-pub async fn cdp_list_pages(cdp: State<'_, Cdp>) -> Result<Vec<TargetInfo>, String> {
-    Ok(cdp.pages().await)
+pub async fn cdp_list_pages(
+    runtime: State<'_, SocaiRuntime>,
+) -> Result<Vec<BrowserTargetInfo>, String> {
+    Ok(runtime.browser_pages().await)
 }
 
 /// Kept for parity with the existing frontend (the v0 "search" button is a
@@ -28,7 +30,7 @@ pub async fn cdp_list_pages(cdp: State<'_, Cdp>) -> Result<Vec<TargetInfo>, Stri
 /// chromiumoxide-element-driven flow with a plain pre-encoded URL navigate —
 /// no Input primitives required at the crates/browser layer yet.
 #[tauri::command]
-pub async fn cdp_refresh(_cdp: State<'_, Cdp>) -> Result<(), String> {
+pub async fn cdp_refresh(_runtime: State<'_, SocaiRuntime>) -> Result<(), String> {
     // No-op: target changes are now delivered as BrowserEvent::TargetsChanged
     // via the event bridge. The previous explicit refresh polled
     // Target.getTargets; we no longer need that round-trip.
@@ -36,7 +38,10 @@ pub async fn cdp_refresh(_cdp: State<'_, Cdp>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn cdp_test_search(cdp: State<'_, Cdp>, query: String) -> Result<String, String> {
+pub async fn cdp_test_search(
+    runtime: State<'_, SocaiRuntime>,
+    query: String,
+) -> Result<String, String> {
     let query = query.trim();
     if query.is_empty() {
         return Err("query is empty".into());
@@ -44,8 +49,7 @@ pub async fn cdp_test_search(cdp: State<'_, Cdp>, query: String) -> Result<Strin
     let encoded = url_encode_query(query);
     let url = format!("https://www.google.com/search?q={encoded}");
 
-    let tasks = TaskSessionManager::new((*cdp).clone());
-    let page = tasks
+    let page = runtime
         .create_task(&url)
         .await
         .map_err(|e| format!("create_task failed: {e}"))?;

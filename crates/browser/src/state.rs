@@ -141,9 +141,7 @@ impl Cdp {
         }
         loop {
             match rx.recv().await {
-                Ok(BrowserEvent::StatusChanged(StatusPayload::Connected { .. })) => {
-                    return Ok(())
-                }
+                Ok(BrowserEvent::StatusChanged(StatusPayload::Connected { .. })) => return Ok(()),
                 Ok(BrowserEvent::StatusChanged(StatusPayload::Disconnected { reason })) => {
                     return Err(anyhow::anyhow!("disconnected: {reason}"));
                 }

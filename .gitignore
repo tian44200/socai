@@ -4,6 +4,10 @@ __pycache__/
 .venv/
 .socai/
 
+# macOS
+.DS_Store
+**/.DS_Store
+
 # Tauri / frontend
 app/node_modules/
 app/dist/

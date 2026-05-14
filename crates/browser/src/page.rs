@@ -1,3 +1,12 @@
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+use chromiumoxide::cdp::browser_protocol::input::{
+    DispatchKeyEventParams, DispatchKeyEventType, InsertTextParams,
+};
+use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
+use chromiumoxide::layout::Point;
+use chromiumoxide::page::ScreenshotParams;
 use chromiumoxide::Page;
 use serde_json::Value;
 
@@ -13,9 +22,13 @@ const PAGE_INFO_JS: &str = r#"
 return {
   url: location.href,
   title: document.title,
-  readyState: document.readyState,
-  viewport: { w: innerWidth, h: innerHeight },
-  scroll: { x: scrollX, y: scrollY }
+  w: innerWidth,
+  h: innerHeight,
+  sx: scrollX,
+  sy: scrollY,
+  pw: document.documentElement.scrollWidth,
+  ph: document.documentElement.scrollHeight,
+  readyState: document.readyState
 };
 "#;
 
@@ -32,9 +45,46 @@ impl PageSession {
     /// `PageSession.navigate(url, wait_until="domcontentloaded")` in spirit
     /// — chromiumoxide's `wait_for_navigation` blocks until lifecycle "load".
     pub async fn navigate(&self, url: &str) -> anyhow::Result<()> {
-        self.page.goto(url).await?;
-        self.page.wait_for_navigation().await?;
+        self.navigate_with_timeout(url, 15.0).await
+    }
+
+    pub async fn navigate_with_timeout(
+        &self,
+        url: &str,
+        timeout_seconds: f64,
+    ) -> anyhow::Result<()> {
+        let timeout = seconds(timeout_seconds);
+        tokio::time::timeout(timeout, self.page.goto(url)).await??;
+        self.wait_for_load_state("domcontentloaded", timeout_seconds)
+            .await?;
         Ok(())
+    }
+
+    pub async fn wait_for_load_state(
+        &self,
+        state: &str,
+        timeout_seconds: f64,
+    ) -> anyhow::Result<bool> {
+        let target = state.to_ascii_lowercase();
+        let deadline = Instant::now() + seconds(timeout_seconds);
+        while Instant::now() < deadline {
+            let ready = self
+                .evaluate_json("document.readyState")
+                .await
+                .ok()
+                .and_then(|v| v.as_str().map(ToOwned::to_owned))
+                .unwrap_or_default();
+            if matches!(target.as_str(), "domcontentloaded" | "interactive")
+                && matches!(ready.as_str(), "interactive" | "complete")
+            {
+                return Ok(true);
+            }
+            if matches!(target.as_str(), "load" | "complete") && ready == "complete" {
+                return Ok(true);
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        Ok(false)
     }
 
     /// Evaluate a JS snippet and deserialize its return value as
@@ -51,11 +101,96 @@ impl PageSession {
         self.evaluate_json(PAGE_INFO_JS).await
     }
 
+    pub async fn click(&self, x: f64, y: f64) -> anyhow::Result<()> {
+        self.page.click(Point::new(x, y)).await?;
+        Ok(())
+    }
+
+    pub async fn type_text(&self, text: &str) -> anyhow::Result<()> {
+        self.page.execute(InsertTextParams::new(text)).await?;
+        Ok(())
+    }
+
+    pub async fn press_key(&self, key: &str) -> anyhow::Result<()> {
+        let (vk, code, text) = key_definition(key);
+        let base = |event_type| {
+            let mut builder = DispatchKeyEventParams::builder()
+                .r#type(event_type)
+                .key(key)
+                .code(code)
+                .windows_virtual_key_code(vk)
+                .native_virtual_key_code(vk);
+            if !text.is_empty() {
+                builder = builder.text(text);
+            }
+            builder.build().map_err(anyhow::Error::msg)
+        };
+        self.page
+            .execute(base(DispatchKeyEventType::KeyDown)?)
+            .await?;
+        self.page
+            .execute(base(DispatchKeyEventType::KeyUp)?)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn scroll(&self, delta_y: i64) -> anyhow::Result<()> {
+        let expr = format!(
+            "window.scrollBy({{left: 0, top: {}, behavior: 'instant'}}); return {{x: scrollX, y: scrollY}};",
+            delta_y
+        );
+        self.evaluate_json(&expr).await?;
+        Ok(())
+    }
+
+    pub async fn screenshot_png(&self, full: bool) -> anyhow::Result<Vec<u8>> {
+        let params = ScreenshotParams::builder()
+            .format(CaptureScreenshotFormat::Png)
+            .full_page(full)
+            .capture_beyond_viewport(full)
+            .build();
+        Ok(self.page.screenshot(params).await?)
+    }
+
+    pub async fn save_screenshot(&self, path: impl AsRef<Path>, full: bool) -> anyhow::Result<()> {
+        let bytes = self.screenshot_png(full).await?;
+        if let Some(parent) = path.as_ref().parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(path, bytes).await?;
+        Ok(())
+    }
+
     /// Close the underlying tab. Consumes the session — the chromiumoxide
     /// page handle is dropped on success.
     pub async fn close(self) -> anyhow::Result<()> {
         self.page.close().await?;
         Ok(())
+    }
+}
+
+fn seconds(value: f64) -> Duration {
+    Duration::from_secs_f64(value.max(0.1))
+}
+
+fn key_definition(key: &str) -> (i64, &str, &str) {
+    match key {
+        "Enter" => (13, "Enter", "\r"),
+        "Tab" => (9, "Tab", "\t"),
+        "Backspace" => (8, "Backspace", ""),
+        "Escape" => (27, "Escape", ""),
+        "Delete" => (46, "Delete", ""),
+        " " => (32, "Space", " "),
+        "ArrowLeft" => (37, "ArrowLeft", ""),
+        "ArrowUp" => (38, "ArrowUp", ""),
+        "ArrowRight" => (39, "ArrowRight", ""),
+        "ArrowDown" => (40, "ArrowDown", ""),
+        "Home" => (36, "Home", ""),
+        "End" => (35, "End", ""),
+        "PageUp" => (33, "PageUp", ""),
+        "PageDown" => (34, "PageDown", ""),
+        _ if key.len() == 1 => (key.as_bytes()[0] as i64, key, key),
+        _ => (0, key, ""),
     }
 }
 

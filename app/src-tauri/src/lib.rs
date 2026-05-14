@@ -1,22 +1,22 @@
 mod commands;
 
-use socai_browser::{BrowserEvent, Cdp};
+use socai_runtime::{RuntimeBrowserEvent, SocaiRuntime};
 use tauri::{Emitter, Manager};
 
 pub fn run() {
     tauri::Builder::default()
-        .manage(Cdp::new())
+        .manage(SocaiRuntime::new())
         .setup(|app| {
-            let cdp = app.state::<Cdp>().inner().clone();
+            let runtime = app.state::<SocaiRuntime>().inner().clone();
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let mut rx = cdp.subscribe();
+                let mut rx = runtime.subscribe_browser_events();
                 while let Ok(event) = rx.recv().await {
                     match event {
-                        BrowserEvent::StatusChanged(payload) => {
+                        RuntimeBrowserEvent::StatusChanged(payload) => {
                             let _ = handle.emit("cdp:status_changed", payload);
                         }
-                        BrowserEvent::TargetsChanged(pages) => {
+                        RuntimeBrowserEvent::TargetsChanged(pages) => {
                             let _ = handle.emit("cdp:targets_changed", pages);
                         }
                     }

@@ -29,7 +29,8 @@ async fn main() -> anyhow::Result<()> {
     cdp.wait_connected().await?;
 
     let tasks = TaskSessionManager::new(cdp.clone());
-    let page = tasks.create_task(&url).await?;
+    let page = tasks.create_task("about:blank").await?;
+    page.navigate_with_timeout(&url, 60.0).await?;
 
     let runtime = XhsSiteRuntime::new(&page);
     let note = runtime.extract_note(8.0).await?;

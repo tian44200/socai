@@ -4,6 +4,14 @@
 
 ## Phase 1 smoke test
 
+Preferred runner:
+
+```bash
+scripts/run_parity.sh phase1
+scripts/run_parity.sh extract_note
+scripts/run_parity.sh all
+```
+
 The two `*xhs_extractor*` scripts inject the same `page_scripts.js` and call
 the same XHS function, so we can confirm the Rust foundation (chromiumoxide
 + evaluate_json + IIFE wrap) produces the same shape Python does:

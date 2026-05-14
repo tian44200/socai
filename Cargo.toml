@@ -5,6 +5,7 @@ members = [
     "crates/core",
     "crates/browser",
     "crates/sites",
+    "crates/runtime",
     "apps/cli",
     "apps/tui",
 ]
@@ -40,6 +41,7 @@ chromiumoxide = "0.7"
 socai-core = { path = "crates/core" }
 socai-browser = { path = "crates/browser" }
 socai-sites = { path = "crates/sites" }
+socai-runtime = { path = "crates/runtime" }
 
 [workspace.lints.clippy]
 unwrap_used = "warn"

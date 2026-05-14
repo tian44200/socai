@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 socai-core.workspace = true
 socai-sites.workspace = true
+socai-runtime.workspace = true
 anyhow.workspace = true
 tokio = { workspace = true }
 

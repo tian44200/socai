@@ -276,9 +276,7 @@ fn target_info_to_pair(
     (ti.target_id.clone(), ti)
 }
 
-fn to_target_info(
-    info: &chromiumoxide::cdp::browser_protocol::target::TargetInfo,
-) -> TargetInfo {
+fn to_target_info(info: &chromiumoxide::cdp::browser_protocol::target::TargetInfo) -> TargetInfo {
     TargetInfo {
         target_id: info.target_id.inner().clone(),
         r#type: info.r#type.clone(),
@@ -286,4 +284,3 @@ fn to_target_info(
         url: info.url.clone(),
     }
 }
-
