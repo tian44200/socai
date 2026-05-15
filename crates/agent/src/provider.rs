@@ -3,8 +3,6 @@
 //! Key precedence (matches the Python implementation):
 //! 1. environment variables (`ANTHROPIC_API_KEY`, etc.)
 //! 2. `~/.socai/auth.json` — `{provider: {api_key: ...}}`
-//! 3. `~/.flowlens/auth.json` — same shape; we read it as a fallback so the
-//!    Tony/mingrui shared keys don't have to be duplicated.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -125,7 +123,6 @@ fn auth_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(home) = dirs::home_dir() {
         paths.push(home.join(".socai/auth.json"));
-        paths.push(home.join(".flowlens/auth.json"));
     }
     paths
 }
@@ -223,6 +220,66 @@ pub fn save_api_key(provider: Provider, api_key: &str) -> anyhow::Result<std::pa
         let _ = std::fs::set_permissions(&path, perms);
     }
     Ok(path)
+}
+
+/// Persist `provider` + `model` as the new defaults in
+/// `~/.socai/auth.json`. Does not touch the api_key block — used by the
+/// TUI's `/model` command to remember the selection across runs.
+/// Mirrors Python's `defaults.provider` + `defaults.{provider}_model`
+/// convention so both implementations share one config file.
+pub fn save_default_model(provider: Provider, model: &str) -> anyhow::Result<std::path::PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("could not resolve $HOME"))?;
+    let path = home.join(".socai/auth.json");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut data: serde_json::Map<String, Value> = match std::fs::read(&path) {
+        Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+            Ok(Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        },
+        Err(_) => serde_json::Map::new(),
+    };
+
+    let name = provider.as_str();
+    let mut defaults = data
+        .get("defaults")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    defaults.insert("provider".into(), Value::String(name.into()));
+    let trimmed = model.trim();
+    if !trimmed.is_empty() {
+        defaults.insert(format!("{name}_model"), Value::String(trimmed.to_string()));
+    }
+    data.insert("defaults".into(), Value::Object(defaults));
+
+    let rendered = serde_json::to_string_pretty(&Value::Object(data))?;
+    std::fs::write(&path, rendered)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(path)
+}
+
+/// Default model for `provider`, honoring `defaults.{provider}_model`
+/// in any auth blob. Falls back to the compiled-in static default.
+pub fn configured_default_model_for(provider: Provider) -> String {
+    let key = format!("{}_model", provider.as_str());
+    for (_path, blob) in &auth_blobs() {
+        if let Some(defaults) = blob.get("defaults").and_then(Value::as_object) {
+            if let Some(model) = defaults.get(&key).and_then(Value::as_str) {
+                let trimmed = model.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+            }
+        }
+    }
+    default_model_for(provider).to_string()
 }
 
 /// Providers with a usable key on disk, in PROVIDERS order.

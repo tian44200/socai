@@ -17,8 +17,9 @@ use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{Cmd, CompletionType, Config, Editor, EventHandler, Helper, KeyEvent, Modifiers};
 use socai_agent::{
-    config_for, default_model_for, load_api_key, resolve_provider, save_api_key, AgentEvent,
-    AgentOptions, AnthropicBackend, Backend, OpenAICompatBackend, Provider, Tool, PROVIDERS,
+    config_for, configured_default_model_for, load_api_key, resolve_provider, save_api_key,
+    save_default_model, AgentEvent, AgentOptions, AnthropicBackend, Backend, OpenAICompatBackend,
+    Provider, Tool, PROVIDERS,
 };
 use socai_runtime::{BrowserStatus, SocaiRuntime};
 use socai_sites::xhs::{xhs_tools, XhsSiteRuntime, XHS_AGENT_HINT, XHS_HOME_URL};
@@ -190,10 +191,7 @@ fn build_editor() -> Result<Editor<SocaiHelper, DefaultHistory>> {
             EventHandler::Simple(Cmd::Newline),
         );
     }
-    editor.bind_sequence(
-        KeyEvent::ctrl('j'),
-        EventHandler::Simple(Cmd::Newline),
-    );
+    editor.bind_sequence(KeyEvent::ctrl('j'), EventHandler::Simple(Cmd::Newline));
     Ok(editor)
 }
 
@@ -211,14 +209,14 @@ fn print_header(state: &AppState) -> Result<()> {
 
 async fn handle_command(line: &str, state: &mut AppState) -> Result<bool> {
     let body = line.trim_start_matches('/').trim();
-    let (cmd, _rest) = body
+    let (cmd, rest) = body
         .split_once(char::is_whitespace)
         .map(|(c, r)| (c, r.trim()))
         .unwrap_or((body, ""));
     match cmd.to_ascii_lowercase().as_str() {
         "exit" | "quit" => Ok(true),
         "model" => {
-            handle_model_command(state).await?;
+            handle_model_command(state, rest).await?;
             Ok(false)
         }
         "" => Ok(false),
@@ -243,7 +241,7 @@ fn model_options() -> Vec<ModelOption> {
         .iter()
         .map(|provider| {
             let cfg = config_for(*provider);
-            let model = default_model_for(*provider).to_string();
+            let model = configured_default_model_for(*provider);
             let key_status = if load_api_key(*provider).is_some() {
                 "key"
             } else {
@@ -259,7 +257,18 @@ fn model_options() -> Vec<ModelOption> {
         .collect()
 }
 
-async fn handle_model_command(state: &mut AppState) -> Result<()> {
+async fn handle_model_command(state: &mut AppState, rest: &str) -> Result<()> {
+    if !rest.trim().is_empty() {
+        let provider = resolve_provider(None, Some(rest))?;
+        let model = if Provider::from_name(rest).is_some() {
+            configured_default_model_for(provider)
+        } else {
+            rest.trim().to_string()
+        };
+        set_active_model(state, provider, model).await?;
+        return Ok(());
+    }
+
     let current = active_model(state)?;
     let options = model_options();
     let starting_cursor = options.iter().position(|o| o.model == current).unwrap_or(0);
@@ -283,12 +292,21 @@ async fn handle_model_command(state: &mut AppState) -> Result<()> {
         .find(|o| o.label == chosen_label)
         .context("model picker lost its row")?;
 
-    if load_api_key(chosen.provider).is_none() && !prompt_save_key(chosen.provider).await? {
+    set_active_model(state, chosen.provider, chosen.model).await
+}
+
+async fn set_active_model(state: &mut AppState, provider: Provider, model: String) -> Result<()> {
+    if load_api_key(provider).is_none() && !prompt_save_key(provider).await? {
         println!("[socai] model unchanged.");
         return Ok(());
     }
 
-    state.model = Some(chosen.model);
+    let path = save_default_model(provider, &model)?;
+    state.model = Some(model.clone());
+    println!(
+        "[socai] model set to {model}; saved defaults to {}",
+        path.display()
+    );
     Ok(())
 }
 
@@ -340,10 +358,7 @@ async fn ensure_any_llm_key() -> Result<()> {
         .iter()
         .map(|p| {
             let cfg = config_for(*p);
-            (
-                format!("{} ({})", cfg.display_name, cfg.env_keys[0]),
-                *p,
-            )
+            (format!("{} ({})", cfg.display_name, cfg.env_keys[0]), *p)
         })
         .collect();
     let labels: Vec<String> = options.iter().map(|(l, _)| l.clone()).collect();
@@ -394,8 +409,11 @@ fn active_model(state: &AppState) -> Result<String> {
             return Ok(model.clone());
         }
     }
+    if let Some(model) = env_model() {
+        return Ok(model);
+    }
     let provider = resolve_provider(None, None)?;
-    Ok(default_model_for(provider).to_string())
+    Ok(configured_default_model_for(provider))
 }
 
 async fn run_agent_task(runtime: &SocaiRuntime, task: &str, model: Option<&str>) -> Result<()> {
@@ -453,13 +471,24 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, model: Option<&str>)
 
 async fn build_backend(model: Option<&str>) -> Result<Arc<dyn Backend>> {
     let provider = resolve_provider(None, model)?;
-    let effective = model.unwrap_or(default_model_for(provider));
-    ensure_model_key(effective).await?;
+    let effective = model
+        .map(str::to_string)
+        .filter(|m| !m.trim().is_empty())
+        .or_else(env_model)
+        .unwrap_or_else(|| configured_default_model_for(provider));
+    ensure_model_key(&effective).await?;
     let backend: Arc<dyn Backend> = match provider {
-        Provider::Anthropic => Arc::new(AnthropicBackend::new(model.unwrap_or(""))?),
-        other => Arc::new(OpenAICompatBackend::new(other, model.unwrap_or(""))?),
+        Provider::Anthropic => Arc::new(AnthropicBackend::new(effective)?),
+        other => Arc::new(OpenAICompatBackend::new(other, effective)?),
     };
     Ok(backend)
+}
+
+fn env_model() -> Option<String> {
+    std::env::var("SOCAI_MODEL")
+        .ok()
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
 }
 
 async fn connect_runtime(runtime: &SocaiRuntime) -> Result<()> {
@@ -487,7 +516,11 @@ async fn connect_runtime(runtime: &SocaiRuntime) -> Result<()> {
 
 fn print_agent_event(event: &AgentEvent) {
     match event {
-        AgentEvent::Started { run_id, task, model } => {
+        AgentEvent::Started {
+            run_id,
+            task,
+            model,
+        } => {
             println!("\n▸ task: {task}");
             println!("  run {run_id} · model {model}");
         }
