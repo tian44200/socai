@@ -7,7 +7,6 @@ members = [
     "crates/sites",
     "crates/runtime",
     "apps/cli",
-    "apps/tui",
 ]
 
 [workspace.package]
@@ -29,6 +28,8 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.28"
 crossterm = "0.28"
+rustyline = "14"
+inquire = "0.7"
 
 thiserror = "2"
 anyhow = "1"

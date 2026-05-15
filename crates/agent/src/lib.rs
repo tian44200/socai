@@ -22,8 +22,8 @@ pub use llm::{
     OpenAICompatBackend, StopReason, ToolCall, ToolResultContent, ToolSchema,
 };
 pub use provider::{
-    default_model_for, list_available_providers, load_api_key, resolve_provider, save_api_key,
-    Provider, ProviderConfig, PROVIDERS,
+    config_for, default_model_for, list_available_providers, load_api_key, resolve_provider,
+    save_api_key, Provider, ProviderConfig, PROVIDERS,
 };
 pub use r#loop::{run_agent, run_agent_with_events, AgentEvent, AgentOptions, AgentOutcome};
 pub use run_logging::{make_run_dir, RunDebugLogger};

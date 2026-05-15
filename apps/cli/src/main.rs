@@ -1,4 +1,5 @@
 mod daemon;
+mod tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -6,10 +7,10 @@ use serde_json::Value;
 
 #[derive(Parser, Debug)]
 #[command(name = "socai")]
-#[command(about = "socai rust cli")]
+#[command(about = "socai — XHS-savvy browser agent")]
 struct Args {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -54,7 +55,11 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    match args.command {
+    let Some(command) = args.command else {
+        tui::run().await?;
+        return Ok(());
+    };
+    match command {
         Command::SearchNotes { query, pretty } => {
             let result = daemon::send_or_spawn(
                 "search_notes",
