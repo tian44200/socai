@@ -34,7 +34,11 @@ pub fn report_with_artifacts(final_text: &str, run_state: Option<&Arc<RunState>>
             item.summary.clone()
         };
         let alt = summary.replace('[', "(").replace(']', ")");
-        let alt = if alt.is_empty() { "screenshot".to_string() } else { alt };
+        let alt = if alt.is_empty() {
+            "screenshot".to_string()
+        } else {
+            alt
+        };
         out.push_str(&format!("- {summary}\n"));
         out.push_str(&format!("  ![{alt}]({})\n", item.path));
     }

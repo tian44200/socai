@@ -428,6 +428,190 @@ impl<'a> XhsSiteRuntime<'a> {
         Ok(raw.into_iter().filter(Value::is_object).collect())
     }
 
+    pub async fn collect_carousel_images(&self, max_images: i64) -> Result<Vec<String>> {
+        self.ensure_xhs(false).await?;
+        let raw = self
+            .expect_object("carouselImages", Some(&json!({ "max_images": max_images })))
+            .await?;
+        let urls = raw
+            .get("image_urls")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(urls
+            .into_iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .filter(|s| !s.trim().is_empty())
+            .collect())
+    }
+
+    pub async fn scroll_in_note(&self, pixels: i64) -> Result<Value> {
+        self.ensure_xhs(false).await?;
+        self.expect_object("scrollInNote", Some(&json!({ "pixels": pixels })))
+            .await
+    }
+
+    pub async fn list_search_tabs(&self) -> Result<Vec<Value>> {
+        self.ensure_xhs(false).await?;
+        let raw = self.expect_array("searchTabs", None).await?;
+        Ok(raw.into_iter().filter(Value::is_object).collect())
+    }
+
+    /// Click the search-filter tab with the given label (e.g. "全部" / "图文").
+    /// Mirrors Python's two-phase implementation: JS finds the tab and
+    /// returns click coordinates, then we issue a CDP click and poll for the
+    /// new active tab.
+    pub async fn click_search_tab(&self, label: &str, wait_seconds: f64) -> Result<Value> {
+        self.ensure_xhs(false).await?;
+        let loc = self
+            .expect_object("clickSearchTab", Some(&Value::String(label.to_string())))
+            .await?;
+        let ok = loc.get("ok").and_then(Value::as_bool).unwrap_or(false);
+        if !ok {
+            let error = loc
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            return Ok(json!({
+                "ok": false,
+                "label": label,
+                "error": error,
+            }));
+        }
+        if loc
+            .get("was_active")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(json!({
+                "ok": true,
+                "label": label,
+                "skipped": true,
+                "reason": "already_active",
+            }));
+        }
+        let x = loc.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+        let y = loc.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+        self.page.click(x, y).await?;
+        if wait_seconds > 0.0 {
+            tokio::time::sleep(Duration::from_secs_f64(wait_seconds.min(4.0))).await;
+        }
+        let tabs = self.list_search_tabs().await?;
+        let active_filter = tabs
+            .iter()
+            .find(|t| t.get("active").and_then(Value::as_bool).unwrap_or(false))
+            .and_then(|t| t.get("label").and_then(Value::as_str))
+            .unwrap_or("")
+            .to_string();
+        Ok(json!({
+            "ok": true,
+            "label": label,
+            "active_filter": active_filter,
+            "tabs": tabs,
+        }))
+    }
+
+    /// Read the currently visible profile page. Caller is responsible for
+    /// having navigated to a profile URL beforehand; this method only
+    /// extracts (and refuses if the current page isn't a profile).
+    pub async fn extract_profile(
+        &self,
+        max_notes: i64,
+        scroll_rounds: i64,
+    ) -> Result<crate::xhs::XhsAuthorProfile> {
+        self.ensure_xhs(false).await?;
+        let state = self.detect_state().await?;
+        let state_kind = state.get("state").and_then(Value::as_str).unwrap_or("");
+        if state_kind != "profile_page" {
+            let url = state.get("url").and_then(Value::as_str).unwrap_or("");
+            return Err(anyhow::anyhow!(
+                "Current Xiaohongshu page is not a profile page: {url}"
+            ));
+        }
+        let info_value = self.expect_object("profileInfo", None).await?;
+        let info = info_value.as_object().cloned().unwrap_or_default();
+        let cards = self.extract_profile_cards(max_notes, scroll_rounds).await?;
+        let fallback_url = self.current_url().await.unwrap_or_default();
+        Ok(crate::xhs::XhsAuthorProfile {
+            display_name: string_field(&info, "display_name"),
+            xhs_id: string_field(&info, "xhs_id"),
+            profile_url: {
+                let candidate = string_field(&info, "profile_url");
+                if candidate.is_empty() {
+                    fallback_url
+                } else {
+                    candidate
+                }
+            },
+            bio: string_field(&info, "bio"),
+            followers: string_field(&info, "followers"),
+            following: string_field(&info, "following"),
+            likes_and_collections: string_field(&info, "likes_and_collections"),
+            note_cards: cards,
+        })
+    }
+
+    /// Scroll the profile page while pulling visible note cards. Stops
+    /// after `max_notes` unique cards or `scroll_rounds` rounds, whichever
+    /// comes first.
+    pub async fn extract_profile_cards(
+        &self,
+        max_notes: i64,
+        scroll_rounds: i64,
+    ) -> Result<Vec<XhsNoteCard>> {
+        let rounds = scroll_rounds.max(1);
+        let limit = max_notes.max(1) as usize;
+        let mut cards: Vec<XhsNoteCard> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for round_index in 0..rounds {
+            let raw = self.expect_array("profileCards", None).await?;
+            for (index, item) in raw.iter().enumerate() {
+                let Some(obj) = item.as_object() else {
+                    continue;
+                };
+                let position = obj
+                    .get("position")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(index as i64);
+                let card = XhsNoteCard {
+                    note_id: string_field(obj, "note_id"),
+                    title: string_field(obj, "title"),
+                    author: string_field(obj, "author"),
+                    author_id: string_field(obj, "author_id"),
+                    author_url: string_field(obj, "author_url"),
+                    likes: string_field(obj, "likes"),
+                    link: string_field(obj, "link"),
+                    cover_url: string_field(obj, "cover_url"),
+                    r#type: string_field(obj, "type"),
+                    position,
+                    xsec_token: string_field(obj, "xsec_token"),
+                };
+                let key = if !card.note_id.is_empty() {
+                    card.note_id.clone()
+                } else if !card.link.is_empty() {
+                    card.link.clone()
+                } else {
+                    format!("pos:{}", card.position)
+                };
+                if key.is_empty() || seen.contains(&key) {
+                    continue;
+                }
+                seen.insert(key);
+                cards.push(card);
+                if cards.len() >= limit {
+                    return Ok(cards);
+                }
+            }
+            if round_index < rounds - 1 {
+                self.page.scroll(900).await?;
+                tokio::time::sleep(Duration::from_millis(800)).await;
+            }
+        }
+        cards.truncate(limit);
+        Ok(cards)
+    }
+
     /// Extract the currently open note. Caller is responsible for having
     /// navigated to the note URL (or having opened the note modal); the JS
     /// side polls via `noteWithWait` until content hydrates, so the caller

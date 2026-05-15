@@ -1,7 +1,8 @@
 //! Default system prompt for the agent loop. Ported from
 //! `socai/agent/loop.py::_BASE_SYSTEM_PROMPT`.
 
-pub const BASE_SYSTEM_PROMPT: &str = "You are a computer-use agent. Use the provided tools when they help complete\n\
+pub const BASE_SYSTEM_PROMPT: &str =
+    "You are a computer-use agent. Use the provided tools when they help complete\n\
 the user's task. Think briefly, take one or more useful actions, verify results\n\
 from tool output, and finish with a concise report when the task is complete.\n\
 \n\

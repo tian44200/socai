@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Map, Value};
 
 /// XHS note — wire-ready. Field order, names, and types match the JSON
 /// produced by `socai.sites.xhs.entities.XhsNote.to_dict()` exactly, so
@@ -39,6 +39,106 @@ pub struct XhsNote {
     /// MVP doesn't implement the cross-call tracking, so this stays None.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub stale_warning: Option<String>,
+}
+
+/// Author profile entity. Wire shape matches Python's
+/// `XhsAuthorProfile.to_dict()` exactly, including the derived `_value`
+/// integer fields produced by [`parse_count_text`].
+#[derive(Debug, Clone, Default)]
+pub struct XhsAuthorProfile {
+    pub display_name: String,
+    pub xhs_id: String,
+    pub profile_url: String,
+    pub bio: String,
+    pub followers: String,
+    pub following: String,
+    pub likes_and_collections: String,
+    pub note_cards: Vec<XhsNoteCard>,
+}
+
+impl XhsAuthorProfile {
+    pub fn to_value(&self) -> Value {
+        let mut map = Map::new();
+        map.insert("entity_type".into(), json!("author"));
+        map.insert("display_name".into(), json!(self.display_name));
+        map.insert("title".into(), json!(self.display_name));
+        map.insert("xhs_id".into(), json!(self.xhs_id));
+        map.insert(
+            "profile_url".into(),
+            json!(normalize_url(&self.profile_url)),
+        );
+        map.insert("url".into(), json!(normalize_url(&self.profile_url)));
+        map.insert("bio".into(), json!(self.bio));
+        map.insert("followers".into(), json!(self.followers));
+        map.insert(
+            "followers_value".into(),
+            json!(parse_count_text(&self.followers)),
+        );
+        map.insert("following".into(), json!(self.following));
+        map.insert(
+            "following_value".into(),
+            json!(parse_count_text(&self.following)),
+        );
+        map.insert(
+            "likes_and_collections".into(),
+            json!(self.likes_and_collections),
+        );
+        map.insert(
+            "likes_and_collections_value".into(),
+            json!(parse_count_text(&self.likes_and_collections)),
+        );
+        map.insert("note_count".into(), json!(self.note_cards.len()));
+        let cards: Vec<Value> = self
+            .note_cards
+            .iter()
+            .map(|c| serde_json::to_value(c).unwrap_or(Value::Null))
+            .collect();
+        map.insert("note_cards".into(), Value::Array(cards));
+        Value::Object(map)
+    }
+}
+
+/// Parse a Xiaohongshu count text like "1.2k", "3万", "1,234". Returns
+/// 0 on anything unparseable. Mirrors Python's `parse_count_text`.
+pub fn parse_count_text(raw: &str) -> i64 {
+    let value: String = raw.trim().to_lowercase().replace([',', '+'], "");
+    if value.is_empty() {
+        return 0;
+    }
+    // Find leading numeric prefix (with optional decimal) + optional unit suffix.
+    let bytes = value.as_bytes();
+    let mut end = 0usize;
+    let mut saw_dot = false;
+    for (i, ch) in value.char_indices() {
+        if ch.is_ascii_digit() {
+            end = i + ch.len_utf8();
+            continue;
+        }
+        if ch == '.' && !saw_dot {
+            saw_dot = true;
+            end = i + ch.len_utf8();
+            continue;
+        }
+        break;
+    }
+    if end == 0 {
+        return 0;
+    }
+    let number: f64 = std::str::from_utf8(&bytes[..end])
+        .unwrap_or("0")
+        .parse()
+        .unwrap_or(0.0);
+    let unit: String = value[end..]
+        .chars()
+        .take(1)
+        .collect::<String>()
+        .to_lowercase();
+    let multiplier = match unit.as_str() {
+        "万" | "w" => 10_000.0,
+        "k" => 1_000.0,
+        _ => 1.0,
+    };
+    (number * multiplier).round() as i64
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -125,5 +225,33 @@ mod tests {
     fn normalize_url_handles_empty() {
         assert_eq!(normalize_url(""), "");
         assert_eq!(normalize_url("   "), "");
+    }
+
+    #[test]
+    fn parse_count_basic() {
+        assert_eq!(parse_count_text(""), 0);
+        assert_eq!(parse_count_text("0"), 0);
+        assert_eq!(parse_count_text("1234"), 1234);
+        assert_eq!(parse_count_text("1,234"), 1234);
+        assert_eq!(parse_count_text("999+"), 999);
+    }
+
+    #[test]
+    fn parse_count_chinese_wan() {
+        assert_eq!(parse_count_text("1万"), 10_000);
+        assert_eq!(parse_count_text("1.2万"), 12_000);
+        assert_eq!(parse_count_text("3.5w"), 35_000);
+    }
+
+    #[test]
+    fn parse_count_k_suffix() {
+        assert_eq!(parse_count_text("1.5k"), 1_500);
+        assert_eq!(parse_count_text("12K"), 12_000);
+    }
+
+    #[test]
+    fn parse_count_unparseable() {
+        assert_eq!(parse_count_text("none"), 0);
+        assert_eq!(parse_count_text("--"), 0);
     }
 }

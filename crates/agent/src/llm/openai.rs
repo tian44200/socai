@@ -305,7 +305,8 @@ impl Backend for OpenAICompatBackend {
         tools: &[ToolSchema],
         max_tokens: u32,
     ) -> anyhow::Result<LLMResponse> {
-        let chat_messages = build_chat_messages(system, messages, self.preserve_reasoning_content());
+        let chat_messages =
+            build_chat_messages(system, messages, self.preserve_reasoning_content());
         let chat_tools = tools_to_wire(tools);
         let has_tools = !chat_tools.is_empty();
 

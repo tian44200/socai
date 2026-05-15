@@ -217,6 +217,15 @@ pub async fn run_agent_with_events(
         total_input_tokens += response.input_tokens;
         total_output_tokens += response.output_tokens;
 
+        // Split text_blocks into visible vs "[Thinking] "-prefixed thinking.
+        // Some hosts (Anthropic without extended-thinking enabled) ask the
+        // model to prefix its reasoning so we can keep it out of final_text
+        // while still emitting it on the event stream for UIs that want to
+        // show it.
+        let (visible_texts, thinking_texts) = split_thinking(&response.text_blocks);
+
+        // Surface reasoning to subscribers — both the structured
+        // reasoning_content (Kimi/Qwen) and the [Thinking]-prefixed text.
         if !response.reasoning_content.trim().is_empty() {
             emit(
                 &events,
@@ -226,24 +235,33 @@ pub async fn run_agent_with_events(
                 },
             );
         }
+        if !thinking_texts.is_empty() {
+            emit(
+                &events,
+                AgentEvent::Reasoning {
+                    turn,
+                    text: thinking_texts.join("\n"),
+                },
+            );
+        }
 
-        let assistant_blocks = response.to_assistant_blocks();
+        // Build the assistant block list manually instead of using
+        // LLMResponse::to_assistant_blocks() so we can:
+        // - drop [Thinking]-prefixed text from history
+        // - truncate visible text to ASSISTANT_TEXT_MAX_CHARS, matching
+        //   Python's format_assistant_content (320 chars)
+        let assistant_blocks = build_assistant_blocks(&response, &visible_texts);
         messages.push(Message::assistant_blocks(assistant_blocks));
 
-        let mut visible_texts: Vec<String> = Vec::new();
-        for text in &response.text_blocks {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                visible_texts.push(trimmed.to_string());
-                emit(
-                    &events,
-                    AgentEvent::AssistantText {
-                        turn,
-                        text: trimmed.to_string(),
-                    },
-                );
-                final_text = trimmed.to_string();
-            }
+        for text in &visible_texts {
+            emit(
+                &events,
+                AgentEvent::AssistantText {
+                    turn,
+                    text: text.clone(),
+                },
+            );
+            final_text = text.clone();
         }
 
         let tool_call_summary: Vec<Value> = response
@@ -376,18 +394,16 @@ pub async fn run_agent_with_events(
             Ok(response) => {
                 total_input_tokens += response.input_tokens;
                 total_output_tokens += response.output_tokens;
-                for text in &response.text_blocks {
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty() {
-                        emit(
-                            &events,
-                            AgentEvent::AssistantText {
-                                turn: turn + 1,
-                                text: trimmed.to_string(),
-                            },
-                        );
-                        final_text = trimmed.to_string();
-                    }
+                let (visible_texts, _) = split_thinking(&response.text_blocks);
+                for text in &visible_texts {
+                    emit(
+                        &events,
+                        AgentEvent::AssistantText {
+                            turn: turn + 1,
+                            text: text.clone(),
+                        },
+                    );
+                    final_text = text.clone();
                 }
                 debug_log.event(
                     "llm_response",
@@ -545,16 +561,63 @@ fn tool_result_to_content(result: &ToolResult) -> Vec<ToolResultContent> {
         .collect()
 }
 
+/// Squash a tool_result for the chat history. Mirrors Python's
+/// `_summarize_result_blocks_for_history`:
+/// - text blocks → compressed JSON-aware truncation
+/// - image blocks → text placeholder. If a preceding text block contained
+///   "Screenshot saved to <path>", the placeholder names that path so the
+///   model can still cite it in the final report.
+///
+/// Returns a single Text block (or `(empty result)` when nothing usable
+/// remained). The raw bodies still hit disk via tool_results/*.json, so
+/// nothing is lost — we just keep the chat-history budget bounded.
 fn bound_content_for_history(content: &[ToolResultContent]) -> Vec<ToolResultContent> {
-    content
-        .iter()
-        .map(|c| match c {
-            ToolResultContent::Text { text } => ToolResultContent::Text {
-                text: compress_text_maybe_json(text, TOOL_RESULT_TEXT_MAX_CHARS),
-            },
-            other => other.clone(),
-        })
-        .collect()
+    let mut screenshot_path: Option<String> = None;
+    let mut parts: Vec<String> = Vec::new();
+    for block in content {
+        match block {
+            ToolResultContent::Text { text } => {
+                if screenshot_path.is_none() {
+                    screenshot_path = extract_screenshot_hint(text);
+                }
+                let compressed = compress_text_maybe_json(text, TOOL_RESULT_TEXT_MAX_CHARS);
+                if !compressed.trim().is_empty() {
+                    parts.push(compressed);
+                }
+            }
+            ToolResultContent::Image { .. } => {
+                parts.push(match &screenshot_path {
+                    Some(path) => format!("[Image omitted from history. Screenshot file: {path}.]"),
+                    None => "[Image omitted from history.]".to_string(),
+                });
+            }
+        }
+    }
+    let mut combined = parts.join("\n\n").trim().to_string();
+    if combined.chars().count() > TOOL_RESULT_TEXT_MAX_CHARS {
+        combined = compress_text_maybe_json(&combined, TOOL_RESULT_TEXT_MAX_CHARS);
+    }
+    if combined.is_empty() {
+        combined = "(empty result)".to_string();
+    }
+    vec![ToolResultContent::Text { text: combined }]
+}
+
+/// `"Screenshot saved to /tmp/x.png"` → `Some("/tmp/x.png")`. Mirrors
+/// `_screenshot_hint_from_text` from Python.
+fn extract_screenshot_hint(text: &str) -> Option<String> {
+    let marker = "Screenshot saved to ";
+    let idx = text.find(marker)?;
+    let after = &text[idx + marker.len()..];
+    let end = after
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(after.len());
+    let path = after[..end].trim();
+    if path.is_empty() {
+        None
+    } else {
+        Some(path.to_string())
+    }
 }
 
 /// Render tool-result content as a JSON value suitable for the
@@ -581,4 +644,55 @@ fn truncate_summary(text: &str, max_chars: usize) -> String {
     let mut s: String = text.chars().take(max_chars).collect();
     s.push('…');
     s
+}
+
+/// Split assistant text blocks into (visible, thinking) by the `[Thinking] `
+/// prefix. Whitespace-only blocks are dropped from both buckets. Mirrors the
+/// Python `loop.py` slicing.
+fn split_thinking(text_blocks: &[String]) -> (Vec<String>, Vec<String>) {
+    const PREFIX: &str = "[Thinking] ";
+    let mut visible: Vec<String> = Vec::new();
+    let mut thinking: Vec<String> = Vec::new();
+    for block in text_blocks {
+        let trimmed = block.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix(PREFIX) {
+            thinking.push(rest.trim().to_string());
+        } else {
+            visible.push(trimmed.to_string());
+        }
+    }
+    (visible, thinking)
+}
+
+/// Build the assistant message blocks for history. Truncates visible text
+/// to `ASSISTANT_TEXT_MAX_CHARS` (320 — same as Python) to keep history
+/// bounded over many turns. Drops `[Thinking]`-prefixed text since that's
+/// already surfaced as a Reasoning event.
+fn build_assistant_blocks(response: &LLMResponse, visible_texts: &[String]) -> Vec<Block> {
+    use crate::compaction::{truncate, ASSISTANT_TEXT_MAX_CHARS};
+    let mut blocks: Vec<Block> = Vec::new();
+    // Preserve reasoning_content alongside tool_calls so providers that
+    // require it round-tripped (Kimi/Qwen) get it on the next turn.
+    if !response.reasoning_content.trim().is_empty() && !response.tool_calls.is_empty() {
+        blocks.push(Block::ReasoningContent {
+            text: response.reasoning_content.clone(),
+        });
+    }
+    for text in visible_texts {
+        let bounded = truncate(text, ASSISTANT_TEXT_MAX_CHARS);
+        if !bounded.is_empty() {
+            blocks.push(Block::Text { text: bounded });
+        }
+    }
+    for tc in &response.tool_calls {
+        blocks.push(Block::ToolUse {
+            id: tc.id.clone(),
+            name: tc.name.clone(),
+            input: tc.input.clone(),
+        });
+    }
+    blocks
 }

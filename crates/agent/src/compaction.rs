@@ -209,7 +209,12 @@ mod tests {
             "summary": "hi"
         });
         let compact = compact_json_value(&value);
-        let keys: Vec<&str> = compact.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+        let keys: Vec<&str> = compact
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
         assert_eq!(keys[0], "ok");
         assert_eq!(keys[1], "summary");
     }

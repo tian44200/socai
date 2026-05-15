@@ -92,7 +92,11 @@ pub struct RunState {
 }
 
 impl RunState {
-    pub fn new(run_dir: impl AsRef<Path>, task: impl Into<String>, model: impl Into<String>) -> std::io::Result<Self> {
+    pub fn new(
+        run_dir: impl AsRef<Path>,
+        task: impl Into<String>,
+        model: impl Into<String>,
+    ) -> std::io::Result<Self> {
         let run_dir = run_dir.as_ref().to_path_buf();
         let state_dir = run_dir.join("run_state");
         std::fs::create_dir_all(&state_dir)?;
@@ -282,7 +286,10 @@ impl RunState {
         ];
         let has_signal = interesting.iter().any(|k| {
             map.get(*k)
-                .map(|v| !matches!(v, Value::Null) && !v.is_string() || v.as_str().is_some_and(|s| !s.is_empty()))
+                .map(|v| {
+                    !matches!(v, Value::Null) && !v.is_string()
+                        || v.as_str().is_some_and(|s| !s.is_empty())
+                })
                 .unwrap_or(false)
         });
         if !has_signal {
@@ -302,7 +309,10 @@ impl RunState {
             _ => Map::new(),
         };
         compact.insert("key".into(), Value::String(key.clone()));
-        compact.insert("artifact_path".into(), Value::String(artifact_path.to_string()));
+        compact.insert(
+            "artifact_path".into(),
+            Value::String(artifact_path.to_string()),
+        );
         if let Some(turn) = turn {
             compact.insert("turn".into(), json!(turn));
         }
@@ -449,7 +459,8 @@ impl RunState {
             }
         }
         out.push_str("\n# Key Evidence\n");
-        let evidence_items: Vec<&Value> = guard.evidence.values().rev().take(max_evidence).collect();
+        let evidence_items: Vec<&Value> =
+            guard.evidence.values().rev().take(max_evidence).collect();
         if evidence_items.is_empty() {
             out.push_str("- No structured evidence has been extracted yet.\n");
         } else {

@@ -12,7 +12,7 @@
 // the matching helper in `run_state.rs`.
 #![allow(clippy::too_many_arguments)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -102,8 +102,8 @@ impl From<&str> for ToolResult {
     }
 }
 
-/// Per-run shared context. Counters and the run-state handle live in
-/// `Arc<Mutex>` so tools can clone the context and still cooperate.
+/// Per-run shared context. Counters, dedup tables, and the run-state handle
+/// live in `Arc<Mutex>` so tools can clone the context and still cooperate.
 #[derive(Clone)]
 pub struct ToolContext {
     pub run_id: String,
@@ -113,12 +113,26 @@ pub struct ToolContext {
     pub run_state: Option<Arc<RunState>>,
     pub enabled_sites: Arc<Mutex<BTreeSet<String>>>,
     counters: Arc<Mutex<Counters>>,
+    /// Notes the agent has already processed at a given level. Used by
+    /// macros like `topic_scan` to short-circuit repeated reads of the
+    /// same note. Keyed by note id; value is the processed level
+    /// ("deep" / "lite") and whether media was included.
+    processed_notes: Arc<Mutex<BTreeMap<String, ProcessedNote>>>,
+    /// Note ids the agent has sampled via topic_scan in this run — useful
+    /// for "show me what I've already covered" tools.
+    topic_scan_note_ids: Arc<Mutex<Vec<String>>>,
 }
 
 #[derive(Default)]
 struct Counters {
     screenshot: u32,
     artifact: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcessedNote {
+    pub level: String,
+    pub include_media: bool,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -143,7 +157,88 @@ impl ToolContext {
             run_state: None,
             enabled_sites: Arc::new(Mutex::new(BTreeSet::new())),
             counters: Arc::new(Mutex::new(Counters::default())),
+            processed_notes: Arc::new(Mutex::new(BTreeMap::new())),
+            topic_scan_note_ids: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Mark a note as processed. Subsequent calls to `has_processed_note_at_level`
+    /// for the same note id at the same-or-lower depth will short-circuit.
+    pub fn mark_processed_note(&self, note_id: &str, level: &str, include_media: bool) {
+        if note_id.is_empty() {
+            return;
+        }
+        if let Ok(mut guard) = self.processed_notes.lock() {
+            let new_rank = depth_rank(level);
+            match guard.get_mut(note_id) {
+                Some(prev) if depth_rank(&prev.level) > new_rank => {}
+                Some(prev) if depth_rank(&prev.level) == new_rank => {
+                    prev.include_media |= include_media;
+                }
+                Some(prev) => {
+                    prev.level = level.to_string();
+                    prev.include_media = include_media;
+                }
+                None => {
+                    guard.insert(
+                        note_id.to_string(),
+                        ProcessedNote {
+                            level: level.to_string(),
+                            include_media,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    /// `true` when the note has already been processed at `requested_level`
+    /// or deeper. "deep" is considered strictly deeper than "lite".
+    pub fn has_processed_note_at_level(&self, note_id: &str, requested_level: &str) -> bool {
+        self.has_processed_note(note_id, requested_level, false)
+    }
+
+    /// `true` when the note has already been processed at `requested_level`
+    /// or deeper, and media requirements have been satisfied.
+    pub fn has_processed_note(
+        &self,
+        note_id: &str,
+        requested_level: &str,
+        requested_include_media: bool,
+    ) -> bool {
+        if note_id.is_empty() {
+            return false;
+        }
+        let Ok(guard) = self.processed_notes.lock() else {
+            return false;
+        };
+        let Some(prev) = guard.get(note_id) else {
+            return false;
+        };
+        depth_rank(&prev.level) >= depth_rank(requested_level)
+            && (!requested_include_media || prev.include_media)
+    }
+
+    /// Append note ids to the topic-scan history (de-duped, preserving order).
+    pub fn add_topic_scan_note_ids(&self, ids: &[String]) {
+        let Ok(mut guard) = self.topic_scan_note_ids.lock() else {
+            return;
+        };
+        for id in ids {
+            if id.is_empty() {
+                continue;
+            }
+            if !guard.iter().any(|existing| existing == id) {
+                guard.push(id.clone());
+            }
+        }
+    }
+
+    pub fn topic_scan_note_ids(&self) -> Vec<String> {
+        self.topic_scan_note_ids
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     pub fn with_run_state(mut self, run_state: Arc<RunState>) -> Self {
@@ -250,6 +345,14 @@ impl ToolContext {
     }
 }
 
+fn depth_rank(level: &str) -> u8 {
+    match level.to_ascii_lowercase().as_str() {
+        "deep" => 2,
+        "lite" => 1,
+        _ => 0,
+    }
+}
+
 fn sanitize_label(label: &str, fallback: &str) -> String {
     let cleaned: String = label
         .chars()
@@ -337,5 +440,33 @@ impl Tool for EchoTool {
             .unwrap_or("")
             .to_string();
         Ok(ToolResult::text(text))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn processed_notes_require_media_when_requested() {
+        let ctx = ToolContext::new("run", std::env::temp_dir());
+        ctx.mark_processed_note("n1", "deep", false);
+
+        assert!(ctx.has_processed_note("n1", "lite", false));
+        assert!(ctx.has_processed_note("n1", "deep", false));
+        assert!(!ctx.has_processed_note("n1", "deep", true));
+
+        ctx.mark_processed_note("n1", "deep", true);
+        assert!(ctx.has_processed_note("n1", "deep", true));
+    }
+
+    #[test]
+    fn processed_notes_keep_deeper_level() {
+        let ctx = ToolContext::new("run", std::env::temp_dir());
+        ctx.mark_processed_note("n1", "deep", true);
+        ctx.mark_processed_note("n1", "lite", false);
+
+        assert!(ctx.has_processed_note("n1", "deep", true));
+        assert!(ctx.has_processed_note_at_level("n1", "lite"));
     }
 }

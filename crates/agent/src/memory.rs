@@ -63,9 +63,9 @@ pub fn is_tool_result_message(message: &Message) -> bool {
         return false;
     }
     match &message.content {
-        MessageContent::Blocks(blocks) => blocks
-            .iter()
-            .any(|b| matches!(b, Block::ToolResult { .. })),
+        MessageContent::Blocks(blocks) => {
+            blocks.iter().any(|b| matches!(b, Block::ToolResult { .. }))
+        }
         _ => false,
     }
 }

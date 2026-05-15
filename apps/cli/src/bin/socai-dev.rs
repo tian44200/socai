@@ -133,10 +133,7 @@ fn print_providers() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_backend(
-    provider: Option<&str>,
-    model: Option<&str>,
-) -> anyhow::Result<Arc<dyn Backend>> {
+fn build_backend(provider: Option<&str>, model: Option<&str>) -> anyhow::Result<Arc<dyn Backend>> {
     let resolved = socai_agent::resolve_provider(provider, model)?;
     let model_str = model.unwrap_or("").to_string();
     let backend: Arc<dyn Backend> = match resolved {
@@ -203,7 +200,11 @@ async fn run_agent_cmd(
         max_tokens: 4096,
         extra_instructions,
         run_dir: None,
-        enabled_sites: if no_browser { Vec::new() } else { vec!["xhs".into()] },
+        enabled_sites: if no_browser {
+            Vec::new()
+        } else {
+            vec!["xhs".into()]
+        },
         keep_recent_messages: 12,
         memory_max_chars: 6000,
     };
@@ -251,14 +252,19 @@ fn print_event(event: &AgentEvent) {
             }
         }
         AgentEvent::Reasoning { text, .. } => {
-            let preview = text.lines().next().unwrap_or("").chars().take(120).collect::<String>();
+            let preview = text
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(120)
+                .collect::<String>();
             if !preview.is_empty() {
                 println!("│  ⤷ reasoning: {preview}…");
             }
         }
         AgentEvent::ToolCall { name, input, .. } => {
-            let preview =
-                serde_json::to_string(input).unwrap_or_else(|_| input.to_string());
+            let preview = serde_json::to_string(input).unwrap_or_else(|_| input.to_string());
             let preview = if preview.len() > 200 {
                 format!("{}…", &preview[..200])
             } else {

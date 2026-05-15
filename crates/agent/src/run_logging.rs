@@ -68,9 +68,7 @@ pub fn make_run_dir(task: &str) -> PathBuf {
     for suffix in 2u32.. {
         let candidate = base.with_file_name(format!(
             "{}_{}",
-            base.file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("agent"),
+            base.file_name().and_then(|s| s.to_str()).unwrap_or("agent"),
             suffix
         ));
         if !candidate.exists() {
