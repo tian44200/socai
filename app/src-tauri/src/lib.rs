@@ -19,9 +19,7 @@ pub fn run() {
                         RuntimeBrowserEvent::StatusChanged(payload) => {
                             let _ = handle.emit("cdp:status_changed", payload);
                         }
-                        RuntimeBrowserEvent::TargetsChanged(pages) => {
-                            let _ = handle.emit("cdp:targets_changed", pages);
-                        }
+                        RuntimeBrowserEvent::TargetsChanged(_) => {}
                     }
                 }
             });
@@ -32,8 +30,6 @@ pub fn run() {
             commands::cdp_disconnect,
             commands::cdp_status,
             commands::cdp_refresh,
-            commands::cdp_list_pages,
-            commands::cdp_test_search,
             commands::tool_search_notes,
             commands::tool_topic_scan,
             commands::tool_extract_note,

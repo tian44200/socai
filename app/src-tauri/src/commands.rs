@@ -3,7 +3,7 @@ use serde_json::Value;
 use socai_core::agent::{configured_default_model_for, load_api_key, AgentEvent, Provider};
 use socai_core::runtime::{
     create_llm_provider, ensure_llm_provider_configured, run_agent_task as run_agent_with_tools,
-    AgentRunConfig, BrowserStatus, BrowserTargetInfo, RuntimePageSession, SocaiRuntime,
+    AgentRunConfig, BrowserStatus, RuntimePageSession, SocaiRuntime,
 };
 use socai_core::sites::xhs::{
     extract_note_command, search_notes_command, topic_scan_command, xhs_agent_instructions,
@@ -11,7 +11,7 @@ use socai_core::sites::xhs::{
 };
 use tauri::{AppHandle, Emitter, State};
 
-const TAURI_AGENT_PREAMBLE: &str = "You are running inside the Socai desktop app.";
+const TAURI_AGENT_PREAMBLE: &str = "You are running inside the socai desktop app.";
 
 // ── CDP connect tests (existing) ───────────────────────────────────────────
 
@@ -37,42 +37,8 @@ pub async fn cdp_status(runtime: State<'_, SocaiRuntime>) -> Result<BrowserStatu
 }
 
 #[tauri::command]
-pub async fn cdp_list_pages(
-    runtime: State<'_, SocaiRuntime>,
-) -> Result<Vec<BrowserTargetInfo>, String> {
-    Ok(runtime.browser_pages().await)
-}
-
-#[tauri::command]
 pub async fn cdp_refresh(_runtime: State<'_, SocaiRuntime>) -> Result<(), String> {
     Ok(())
-}
-
-#[tauri::command]
-pub async fn cdp_test_search(
-    runtime: State<'_, SocaiRuntime>,
-    query: String,
-) -> Result<String, String> {
-    let query = query.trim();
-    if query.is_empty() {
-        return Err("query is empty".into());
-    }
-    let encoded = url_encode_query(query);
-    let url = format!("https://www.google.com/search?q={encoded}");
-    let page = runtime
-        .create_page(&url)
-        .await
-        .map_err(|e| format!("create_page failed: {e}"))?;
-    let info = page
-        .page_info()
-        .await
-        .map_err(|e| format!("page_info failed: {e}"))?;
-    let final_url = info
-        .get("url")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    Ok(format!("opened results for \"{query}\" — {final_url}"))
 }
 
 // ── Tool-call tests ─────────────────────────────────────────────────────────
@@ -304,18 +270,4 @@ fn event_to_payload(event: &AgentEvent) -> AgentEventPayload {
             text: format!("done in {turns} turns"),
         },
     }
-}
-
-fn url_encode_query(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
