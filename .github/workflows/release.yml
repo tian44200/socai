@@ -1,0 +1,344 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: semantic version bump for this release
+        type: choice
+        required: true
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-app-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: prepare release version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      previous_tag: ${{ steps.version.outputs.previous_tag }}
+      release_sha: ${{ steps.commit.outputs.release_sha }}
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: require main branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "releases must be dispatched from main; current ref is ${GITHUB_REF}" >&2
+            exit 1
+          fi
+
+      - name: calculate next version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          latest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
+
+          if [ -n "${latest_tag}" ]; then
+            base_version="${latest_tag#v}"
+            previous_tag="${latest_tag}"
+          else
+            base_version="$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('app/src-tauri/tauri.conf.json').read_text())['version'])
+          PY
+          )"
+            previous_tag=""
+          fi
+
+          IFS=. read -r major minor patch <<< "${base_version}"
+
+          case "${{ inputs.release_type }}" in
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            patch)
+              patch=$((patch + 1))
+              ;;
+            *)
+              echo "unsupported release type: ${{ inputs.release_type }}" >&2
+              exit 1
+              ;;
+          esac
+
+          version="${major}.${minor}.${patch}"
+          tag="v${version}"
+
+          if git rev-parse "${tag}" >/dev/null 2>&1; then
+            echo "tag ${tag} already exists" >&2
+            exit 1
+          fi
+
+          echo "base_version=${base_version}"
+          echo "previous_tag=${previous_tag}"
+          echo "version=${version}"
+          echo "tag=${tag}"
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "previous_tag=${previous_tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: update version files
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ['VERSION']
+
+          for file_name in ['app/package.json', 'app/src-tauri/tauri.conf.json']:
+              path = Path(file_name)
+              data = json.loads(path.read_text())
+              data['version'] = version
+              path.write_text(json.dumps(data, indent=2) + '\n')
+
+          cargo_toml = Path('app/src-tauri/Cargo.toml')
+          cargo_text = cargo_toml.read_text()
+          cargo_text, cargo_count = re.subn(
+              r'(?m)^version = "[^"]+"',
+              f'version = "{version}"',
+              cargo_text,
+              count=1,
+          )
+          if cargo_count != 1:
+              raise SystemExit('expected exactly one package version in app/src-tauri/Cargo.toml')
+          cargo_toml.write_text(cargo_text)
+
+          cargo_lock = Path('Cargo.lock')
+          if cargo_lock.exists():
+              lock_text = cargo_lock.read_text()
+              lock_text, lock_count = re.subn(
+                  r'(name = "socai_app"\nversion = ")[^"]+("\n)',
+                  rf'\g<1>{version}\2',
+                  lock_text,
+                  count=1,
+              )
+              if lock_count != 1:
+                  raise SystemExit('expected exactly one socai_app package entry in Cargo.lock')
+              cargo_lock.write_text(lock_text)
+          PY
+
+      - name: commit release version
+        id: commit
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add app/package.json app/src-tauri/tauri.conf.json app/src-tauri/Cargo.toml Cargo.lock
+
+          if git diff --cached --quiet; then
+            echo "version files already up to date"
+          else
+            git commit -m "chore: release socai v${VERSION}"
+            git push origin HEAD:main
+          fi
+
+          release_sha="$(git rev-parse HEAD)"
+          echo "release_sha=${release_sha}"
+          echo "release_sha=${release_sha}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: build ${{ matrix.label }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: apple silicon
+            arch: apple-silicon
+            target: aarch64-apple-darwin
+            runner: macos-14
+          - label: intel
+            arch: intel
+            target: x86_64-apple-darwin
+            runner: macos-13
+
+    steps:
+      - name: checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+
+      - name: set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+          run_install: false
+
+      - name: set up node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: install frontend dependencies
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+
+      - name: set up rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: cache rust build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+          key: ${{ matrix.target }}
+
+      - name: clear stale bundle outputs
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          rm -rf "target/${TARGET}/release/bundle"
+
+      - name: build app bundle and dmg
+        working-directory: app
+        run: pnpm exec tauri build --ci --no-sign --target "${{ matrix.target }}" --bundles app,dmg
+
+      - name: collect distributable artifacts
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          bundle_dir="target/${TARGET}/release/bundle"
+          dmg_dir="${bundle_dir}/dmg"
+          mkdir -p dist-artifacts
+
+          dmg="$(find "${dmg_dir}" -maxdepth 1 -type f -name '*.dmg' -print | head -n 1)"
+
+          if [ -z "${dmg}" ]; then
+            echo "no dmg found in ${dmg_dir}" >&2
+            exit 1
+          fi
+
+          cp "${dmg}" "dist-artifacts/socai-${VERSION}-macos-${ARCH}.dmg"
+
+          ls -lah dist-artifacts
+
+      - name: upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: socai-${{ needs.prepare.outputs.version }}-macos-${{ matrix.arch }}
+          path: dist-artifacts/*
+          if-no-files-found: error
+
+  release:
+    name: publish github release
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+          fetch-depth: 0
+
+      - name: download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: socai-${{ needs.prepare.outputs.version }}-macos-*
+          merge-multiple: true
+          path: dist-artifacts
+
+      - name: create release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PREVIOUS_TAG: ${{ needs.prepare.outputs.previous_tag }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+
+          args=(-f "tag_name=${TAG}" -f "target_commitish=${RELEASE_SHA}")
+          if [ -n "${PREVIOUS_TAG}" ]; then
+            args+=(-f "previous_tag_name=${PREVIOUS_TAG}")
+          fi
+
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" "${args[@]}" --jq '.body' > generated-notes.md
+
+          cat > release-notes.md <<EOF
+          ## downloads
+
+          - [apple silicon mac dmg](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-${VERSION}-macos-apple-silicon.dmg)
+          - [intel mac dmg](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/socai-${VERSION}-macos-intel.dmg)
+
+          These macOS builds are currently unsigned. Gatekeeper may require right-clicking the app and choosing **Open** on first launch.
+
+          ## changes
+
+          EOF
+          cat generated-notes.md >> release-notes.md
+
+          cat release-notes.md
+
+      - name: publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+
+          ls -lah dist-artifacts
+
+          gh release create "${TAG}" dist-artifacts/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${RELEASE_SHA}" \
+            --title "socai ${VERSION}" \
+            --notes-file release-notes.md
