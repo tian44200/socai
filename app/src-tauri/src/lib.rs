@@ -1,6 +1,10 @@
 mod commands;
+mod tasks;
+
+use std::collections::HashSet;
 
 use socai_core::runtime::{RuntimeBrowserEvent, SocaiRuntime};
+use tasks::AgentTaskRegistry;
 use tauri::{Emitter, Manager};
 
 pub fn run() {
@@ -9,8 +13,10 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(runtime)
+        .manage(AgentTaskRegistry::default())
         .setup(|app| {
             let runtime = app.state::<SocaiRuntime>().inner().clone();
+            let tasks = app.state::<AgentTaskRegistry>().inner().clone();
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut rx = runtime.subscribe_browser_events();
@@ -19,7 +25,25 @@ pub fn run() {
                         RuntimeBrowserEvent::StatusChanged(payload) => {
                             let _ = handle.emit("cdp:status_changed", payload);
                         }
-                        RuntimeBrowserEvent::TargetsChanged(_) => {}
+                        RuntimeBrowserEvent::TargetsChanged(targets) => {
+                            let active_targets: HashSet<String> =
+                                targets.into_iter().map(|target| target.target_id).collect();
+                            for (snapshot, abort_handle) in
+                                tasks.interrupt_missing_targets(&active_targets).await
+                            {
+                                if let Some(handle) = abort_handle {
+                                    handle.abort();
+                                }
+                                let task_id = snapshot.task_id.clone();
+                                commands::emit_task_event(
+                                    &handle,
+                                    &task_id,
+                                    "interrupted",
+                                    "chrome tab was closed".into(),
+                                    Some(snapshot),
+                                );
+                            }
+                        }
                     }
                 }
             });
@@ -35,6 +59,10 @@ pub fn run() {
             commands::tool_extract_note,
             commands::agent_list_models,
             commands::agent_save_api_key,
+            commands::agent_task_start,
+            commands::agent_task_list,
+            commands::agent_task_get,
+            commands::agent_task_cancel,
             commands::agent_run,
         ])
         .run(tauri::generate_context!())

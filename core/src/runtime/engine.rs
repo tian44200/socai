@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -67,6 +68,10 @@ impl SocaiRuntime {
 
     pub async fn create_page(&self, start_url: &str) -> Result<PageSession> {
         self.page_sessions().create_page(start_url).await
+    }
+
+    pub async fn close_target(&self, target_id: &str) -> Result<bool> {
+        self.page_sessions().close_target(target_id).await
     }
 
     /// Return the reusable page for a site within this process, creating it
@@ -187,6 +192,7 @@ pub struct AgentRunConfig {
     pub memory_max_chars: usize,
     pub extra_instructions: String,
     pub enabled_sites: Vec<String>,
+    pub run_dir: Option<PathBuf>,
 }
 
 impl Default for AgentRunConfig {
@@ -198,6 +204,7 @@ impl Default for AgentRunConfig {
             memory_max_chars: 6000,
             extra_instructions: String::new(),
             enabled_sites: Vec::new(),
+            run_dir: None,
         }
     }
 }
@@ -217,7 +224,7 @@ pub async fn run_agent_task(
         max_turns: config.max_turns,
         max_tokens: config.max_tokens,
         extra_instructions: config.extra_instructions,
-        run_dir: None,
+        run_dir: config.run_dir,
         enabled_sites: config.enabled_sites,
         keep_recent_messages: config.keep_recent_messages,
         memory_max_chars: config.memory_max_chars,

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use chromiumoxide::cdp::browser_protocol::target::CloseTargetParams;
 use chromiumoxide::Browser;
 
 use crate::cdp::connection::{Cdp, CdpState};
@@ -23,6 +24,21 @@ impl PageSessionManager {
         let browser = self.browser().await?;
         let page = browser.new_page(start_url).await?;
         Ok(PageSession::new(page))
+    }
+
+    /// Close a page target by target id. This is stronger than consuming a
+    /// `PageSession`: cancellation paths may only have a task snapshot and an
+    /// id, or the page may still be held by tool `Arc`s.
+    pub async fn close_target(&self, target_id: &str) -> anyhow::Result<bool> {
+        let target_id = target_id.trim();
+        if target_id.is_empty() {
+            return Ok(false);
+        }
+        let browser = self.browser().await?;
+        browser
+            .execute(CloseTargetParams::new(target_id.to_string()))
+            .await?;
+        Ok(true)
     }
 
     async fn browser(&self) -> anyhow::Result<Arc<Browser>> {
