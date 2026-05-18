@@ -3,7 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-import { agentPanel } from "./capability_tests";
+import { agentPanel } from "./panels/tasks";
 
 export type Status =
   | { state: "disconnected"; reason: string }
@@ -17,9 +17,33 @@ export interface ModelInfo {
   has_key: boolean;
 }
 
-export interface AgentEventPayload {
+export type AgentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
+
+export interface AgentTaskSnapshot {
+  task_id: string;
+  task: string;
+  model: string | null;
+  status: AgentTaskStatus;
+  created_at: number;
+  started_at: number | null;
+  finished_at: number | null;
+  run_id: string | null;
+  run_dir: string | null;
+  target_id: string | null;
+  final_text: string | null;
+  error: string | null;
+  turns: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+}
+
+export interface AgentTaskEventPayload {
+  task_id: string;
   kind:
+    | "queued"
+    | "running"
     | "started"
+    | "tab"
     | "turn"
     | "assistant"
     | "reasoning"
@@ -27,8 +51,13 @@ export interface AgentEventPayload {
     | "tool_result"
     | "tool_error"
     | "api_error"
-    | "done";
+    | "done"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "interrupted";
   text: string;
+  snapshot: AgentTaskSnapshot | null;
 }
 
 export interface ShellState {
@@ -50,7 +79,7 @@ interface PanelModule {
 }
 
 const PANELS: PanelModule[] = [
-  { label: "task", render: agentPanel.render, bind: agentPanel.bind },
+  { label: "tasks", render: agentPanel.render, bind: agentPanel.bind },
 ];
 
 let status: Status = { state: "disconnected", reason: "starting" };
@@ -68,7 +97,6 @@ function render(): void {
     .map(
       (p) => `
       <section class="section">
-        <p class="t-eyebrow section-label">${p.label}</p>
         ${p.render(state)}
       </section>`,
     )
@@ -200,6 +228,12 @@ async function main(): Promise<void> {
   } catch (e) {
     console.error("agent_list_models failed:", e);
   }
+  try {
+    const tasks = await invoke<AgentTaskSnapshot[]>("agent_task_list");
+    agentPanel.setTasks(tasks);
+  } catch (e) {
+    console.error("agent_task_list failed:", e);
+  }
   render();
   bindGlobalDismiss();
 
@@ -209,11 +243,11 @@ async function main(): Promise<void> {
     render();
   });
 
-  // Stream agent events incrementally — full re-render once per event would
-  // also work but blows away the DOM unnecessarily and breaks the user's
-  // scroll position. The panel appends a row and pins scroll-to-bottom.
-  await listen<AgentEventPayload>("agent:event", (event) => {
-    agentPanel.appendEvent(event.payload);
+  // Stream task-scoped agent events incrementally. Snapshot/status events ask
+  // for a full render so the task list and final answer update; normal stream
+  // rows append in place to preserve scroll.
+  await listen<AgentTaskEventPayload>("agent_task:event", (event) => {
+    if (agentPanel.appendTaskEvent(event.payload)) render();
   });
 
   const refresh = (): void => {
