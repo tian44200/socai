@@ -772,19 +772,42 @@ user-facing application.
 
 ## 7. Where socai lands
 
-socai actually spans **two patterns** — and that's its differentiation.
+socai actually spans **three patterns** — and that's its differentiation.
+Note the CLI is not one surface but two: an interactive *agent* REPL (TUI) and a
+separate *agentless* tool CLI, which land in different patterns.
 
-### 7.1 CLI mode — Pattern D (monolithic agent CLI)
+### 7.1 CLI agent mode — Pattern D (monolithic agent CLI)
 
-`uv run socai` is structurally a browser-use-style agent CLI:
+`uv run socai` with **no subcommand** drops into the interactive REPL (TUI), which
+is structurally a browser-use-style agent CLI:
 - Single Python process, owns `BrowserTaskSessionManager` (which holds
   Chrome's CDP connection).
-- Interactive REPL — many tasks share one Chrome across the REPL session.
+- Interactive TUI — many tasks share one Chrome across the session.
 - Per AGENTS.md: *"create a new task tab per user task"* — each task gets
   its own tab in the same Chrome.
-- Dies when user exits REPL.
+- The LLM agent loop runs **inside** the process. Dies when the user exits
+  the TUI.
 
-### 7.2 Desktop mode — Pattern E (integrated product)
+### 7.2 CLI tool mode — Pattern A (detached daemon)
+
+`socai search_notes` / `topic_scan` / `extract_note` are a *second, distinct*
+CLI surface — **agentless** tool subcommands, not the agent TUI. Structurally they
+are Vercel agent-browser's CLI+daemon split (§6.1), just at a higher
+granularity (domain tool calls, not `click @e1`):
+- The CLI invocation is short-lived: parse args → send one JSON request over
+  `~/.socai/daemon.sock` → print result → exit.
+- A long-lived **daemon** owns one persistent "tool tab" plus a cached
+  `XhsRuntime`. It auto-spawns on the first tool call and auto-shuts after
+  3h idle, so Chrome stays warm across invocations (`socai stop` ends it early).
+- **No internal LLM loop.** The caller — a human, a script, or an external
+  agent (Claude Code, Codex) — decides which tool to invoke. This *is* socai's
+  external-agent surface (see §7.4); `commands.py` names exactly that audience.
+- Like the TUI, the daemon attaches to the user's already-logged-in Chrome
+  via `discover_existing_chrome_endpoint` rather than spawning a fresh
+  Chromium — so its blast radius is the user's full profile (a Pattern C
+  trait), not an isolated one.
+
+### 7.3 Desktop mode — Pattern E (integrated product)
 
 The Tauri desktop app integrates everything:
 - Rust shell + chromiumoxide owns Chrome's CDP WebSocket.
@@ -792,7 +815,7 @@ The Tauri desktop app integrates everything:
 - Chrome lives as long as the app window is open.
 - No MCP boundary; agent is part of the product, in-process IPC.
 
-### 7.3 Strategic differentiation
+### 7.4 Strategic differentiation
 
 | Tool | Monolithic CLI | External-agent surface | Integrated product |
 |---|---|---|---|
@@ -800,15 +823,16 @@ The Tauri desktop app integrates everything:
 | Stagehand | ❌ | ✅ (MCP server) | ❌ |
 | Vercel agent-browser | ❌ (the CLI *is* the tool surface) | ✅ (CLI + daemon) | ❌ |
 | browser-harness | ✅ (the script *is* the harness) | ✅ (same script) | ❌ |
-| **socai** | ✅ | (open) | ✅ |
+| **socai** | ✅ (REPL/TUI) | ✅ (daemon tool CLI) | ✅ |
 
-**socai is the only one with the integrated-product column filled.**
-That's a real strategic differentiation — libraries can't build it
-because they're libraries, not products. The libraries' ceiling is
+**socai fills all three columns, and it's the only one with the
+integrated-product column filled.**
+That last column is the real strategic differentiation — libraries can't
+build it because they're libraries, not products. The libraries' ceiling is
 "be a great tool surface"; socai's ceiling is "be the product the user
 opens to do work."
 
-### 7.4 Open positioning questions
+### 7.5 Open positioning questions
 
 - **MCP server for external agents?** Should socai expose its tools to
   Claude Code / Codex via MCP? If yes, socai becomes a *platform* on top
@@ -817,9 +841,12 @@ opens to do work."
 - **Profile model.** Fresh user-data-dir on every CLI run (safe, fresh
   state) or persistent profile by default (sticky logins)? Check current
   behavior in `BrowserTaskSessionManager`.
-- **Real-Chrome attachment option?** Some users will want browser-
-  harness-style "use my daily Chrome." Worth deciding whether socai
-  supports this as an opt-in or refuses it on safety grounds.
+- **Isolated-profile option?** socai *already* attaches to the user's daily
+  Chrome by default (`discover_existing_chrome_endpoint`), so it's
+  browser-harness-style out of the box — full blast radius included. The open
+  question is the inverse: should socai *also* offer a fresh-Chromium /
+  isolated-profile mode for users who want the safer default, or stay
+  attach-only?
 - **Agent loop ownership.** socai ships its own loop in `socai/agent/`.
   As external agent harnesses (Claude Code, Codex) grow more capable,
   will the integrated agent stay primary, or will users want socai's
