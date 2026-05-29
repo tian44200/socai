@@ -1,8 +1,10 @@
 pub mod entities;
+pub mod history;
 pub mod page;
 pub mod tools;
 
 pub use self::entities::{parse_count_text, XhsAuthorProfile, XhsNote, XhsNoteCard};
+pub use self::history::{HistoryEntry, HistorySnapshot, XhsHistoryStore};
 pub use self::page::{ReadNoteOptions, XhsPageRuntime, XHS_HOME_URL};
 pub use self::tools::{
     close_open_note, ensure_search_ready, extract_note_command, search_notes_command,

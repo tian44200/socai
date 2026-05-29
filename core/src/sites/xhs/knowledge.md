@@ -102,8 +102,12 @@ Video fields: `url`, `resolved_url`, `poster_url`, optional `transcript`,
 - Preserve real XHS post links from cards when available, including
   `xsec_token` query parameters. Fall back to bare `/explore/<note_id>` only
   when no real tokenized URL exists.
-- Treat `already_analyzed` on cards as a signal to avoid repeated reads unless
-  the user asks to refresh, compare history, or deepen the previous level.
+- Cards carry `already_analyzed` / `history_level` / `history_include_media`
+  flags when a prior run already read them. `read_note` and `topic_scan`
+  short-circuit notes already covered at the requested level and media
+  setting — the returned payload has `skipped: true` plus the prior
+  `history` entry. To deepen prior analysis, request a higher `level` (e.g.
+  `deep` after a `lite`) or set `include_media: true`.
 - Keep DOM text, comment evidence, image OCR/vision, and video transcript/frame
   evidence labeled separately in final answers.
 - If a read returns a stale-note warning or note-id mismatch, close the current

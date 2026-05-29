@@ -13,7 +13,7 @@ use crate::media::{timing_delta, MediaProcessor, TimingSnapshot};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use crate::sites::xhs::{ReadNoteOptions, XhsNoteCard, XhsPageRuntime};
+use crate::sites::xhs::{ReadNoteOptions, XhsHistoryStore, XhsNoteCard, XhsPageRuntime};
 
 /// XHS agent playbook: browser-lock rule, tool inventory, anti-bot rules,
 /// page states, entity fields, workflows, reading levels, evidence rules,
@@ -31,9 +31,16 @@ pub fn xhs_tools_with_llm_provider(
     page: Arc<PageSession>,
     llm_provider: Option<Arc<dyn LlmProvider>>,
 ) -> Vec<Arc<dyn Tool>> {
+    let history = Arc::new(XhsHistoryStore::open_default());
     vec![
-        Arc::new(SearchNotesTool { page: page.clone() }) as Arc<dyn Tool>,
-        Arc::new(ExtractSearchCardsTool { page: page.clone() }),
+        Arc::new(SearchNotesTool {
+            page: page.clone(),
+            history: history.clone(),
+        }) as Arc<dyn Tool>,
+        Arc::new(ExtractSearchCardsTool {
+            page: page.clone(),
+            history: history.clone(),
+        }),
         Arc::new(ListSearchTabsTool { page: page.clone() }),
         Arc::new(ClickSearchTabTool { page: page.clone() }),
         Arc::new(OpenNoteTool { page: page.clone() }),
@@ -41,10 +48,12 @@ pub fn xhs_tools_with_llm_provider(
         Arc::new(ReadNoteTool {
             page: page.clone(),
             llm_provider: llm_provider.clone(),
+            history: history.clone(),
         }),
         Arc::new(ExtractNoteTool {
             page: page.clone(),
             llm_provider: llm_provider.clone(),
+            history: history.clone(),
         }),
         Arc::new(ExtractCommentsTool { page: page.clone() }),
         Arc::new(ScrollInNoteTool { page: page.clone() }),
@@ -53,6 +62,7 @@ pub fn xhs_tools_with_llm_provider(
         Arc::new(TopicScanTool {
             page: page.clone(),
             llm_provider,
+            history,
         }),
         Arc::new(PageStateTool { page }),
     ]
@@ -324,6 +334,7 @@ fn media_for(
 /// search_notes(query, wait_seconds) -> {query, cards: [...]}
 pub struct SearchNotesTool {
     page: Arc<PageSession>,
+    history: Arc<XhsHistoryStore>,
 }
 
 #[async_trait]
@@ -359,7 +370,10 @@ impl Tool for SearchNotesTool {
             .to_string();
         let wait_seconds = get_f64(&input, "wait_seconds", 2.0);
         let xhs = XhsPageRuntime::new(&self.page);
-        let value = xhs.search_notes(&query, wait_seconds).await?;
+        let mut value = xhs.search_notes(&query, wait_seconds).await?;
+        if let Some(cards) = value.get_mut("cards") {
+            self.history.annotate_cards(cards);
+        }
         Ok(json_result(&value))
     }
 }
@@ -444,6 +458,7 @@ impl Tool for CloseNoteTool {
 pub struct ReadNoteTool {
     page: Arc<PageSession>,
     llm_provider: Option<Arc<dyn LlmProvider>>,
+    history: Arc<XhsHistoryStore>,
 }
 
 #[async_trait]
@@ -482,6 +497,28 @@ impl Tool for ReadNoteTool {
             .and_then(|i| usize::try_from(i).ok());
         let wait_seconds = get_f64(&input, "wait_seconds", 6.0);
         let options = read_note_options(&input);
+
+        // Cross-run dedup: short-circuit when a previous run already covers
+        // this note at the requested level + media. Only fires when note_id
+        // is known up front.
+        if let Some(id) = note_id.as_deref().filter(|s| !s.trim().is_empty()) {
+            if self
+                .history
+                .is_satisfied_by(id, &options.level, options.include_media)
+            {
+                let entry = self.history.get(id).unwrap_or_default();
+                return Ok(json_result(&json!({
+                    "ok": true,
+                    "skipped": true,
+                    "reason": "already_analyzed",
+                    "note_id": id,
+                    "requested_level": options.level,
+                    "requested_include_media": options.include_media,
+                    "history": entry,
+                })));
+            }
+        }
+
         let xhs = XhsPageRuntime::new_with_media(
             &self.page,
             media_for(ctx, self.llm_provider.clone(), options.include_media)?,
@@ -491,9 +528,15 @@ impl Tool for ReadNoteTool {
                 note_id.as_deref().unwrap_or(""),
                 index,
                 wait_seconds,
-                options,
+                options.clone(),
             )
             .await?;
+        if value.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            if let Some(entity) = value.get("entity") {
+                self.history
+                    .record(entity, &options.level, options.include_media);
+            }
+        }
         Ok(json_result(&value))
     }
 }
@@ -502,6 +545,7 @@ impl Tool for ReadNoteTool {
 pub struct ExtractNoteTool {
     page: Arc<PageSession>,
     llm_provider: Option<Arc<dyn LlmProvider>>,
+    history: Arc<XhsHistoryStore>,
 }
 
 #[async_trait]
@@ -535,8 +579,12 @@ impl Tool for ExtractNoteTool {
             &self.page,
             media_for(ctx, self.llm_provider.clone(), options.include_media)?,
         );
-        let note = xhs.extract_note_with_options(wait_seconds, options).await?;
+        let note = xhs
+            .extract_note_with_options(wait_seconds, options.clone())
+            .await?;
         let value = serde_json::to_value(&note)?;
+        self.history
+            .record(&value, &options.level, options.include_media);
         Ok(json_result(&value))
     }
 }
@@ -608,6 +656,7 @@ impl Tool for PageStateTool {
 /// currently visible in the search results without re-running the search.
 pub struct ExtractSearchCardsTool {
     page: Arc<PageSession>,
+    history: Arc<XhsHistoryStore>,
 }
 
 #[async_trait]
@@ -629,7 +678,8 @@ impl Tool for ExtractSearchCardsTool {
     async fn call(&self, _input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
         let xhs = XhsPageRuntime::new(&self.page);
         let cards = xhs.extract_search_cards().await?;
-        let value = serde_json::to_value(&cards)?;
+        let mut value = serde_json::to_value(&cards)?;
+        self.history.annotate_cards(&mut value);
         Ok(json_result(&value))
     }
 }
@@ -816,6 +866,7 @@ impl Tool for ExtractProfileTool {
 pub struct TopicScanTool {
     page: Arc<PageSession>,
     llm_provider: Option<Arc<dyn LlmProvider>>,
+    history: Arc<XhsHistoryStore>,
 }
 
 struct ScanProfile {
@@ -898,6 +949,13 @@ impl Tool for TopicScanTool {
         let media = media_for(ctx, self.llm_provider.clone(), profile.include_media)?;
         let media_baseline: Option<TimingSnapshot> = media.as_ref().map(|m| m.timing().snapshot());
         let xhs = XhsPageRuntime::new_with_media(&self.page, media.clone());
+
+        // Snapshot history BEFORE we start reading. The loop below may
+        // record notes into the live store, but final-payload annotations
+        // should reflect the state going in — otherwise a first-time scan
+        // labels its own freshly-read cards as `already_analyzed`.
+        let history_snapshot = self.history.snapshot();
+
         let search = xhs.search_notes(&query, 2.0).await?;
 
         // Optional tab switch + re-extract cards.
@@ -935,7 +993,7 @@ impl Tool for TopicScanTool {
             };
 
             // Dedup: skip notes already processed at this level or deeper
-            // within the same run.
+            // within the same run OR in a previous run (cross-run history).
             let requested_media = profile.include_media && level == "deep";
             if !card.note_id.is_empty()
                 && ctx.has_processed_note(&card.note_id, level, requested_media)
@@ -946,6 +1004,21 @@ impl Tool for TopicScanTool {
                     "skipped": {"reason": "already_processed"},
                     "entity": card,
                 }));
+                continue;
+            }
+            if !card.note_id.is_empty()
+                && self
+                    .history
+                    .is_satisfied_by(&card.note_id, level, requested_media)
+            {
+                let entry = self.history.get(&card.note_id).unwrap_or_default();
+                notes.push(json!({
+                    "scan_level": level,
+                    "source_position": card.position,
+                    "skipped": {"reason": "already_analyzed", "history": entry},
+                    "entity": card,
+                }));
+                ctx.mark_processed_note(&card.note_id, level, requested_media);
                 continue;
             }
             let read_result = xhs
@@ -990,9 +1063,14 @@ impl Tool for TopicScanTool {
                 }
             }
 
-            // Mark processed.
+            // Mark processed in-run + record in cross-run history.
             if !card.note_id.is_empty() {
                 ctx.mark_processed_note(&card.note_id, level, requested_media);
+            }
+            if entry.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+                if let Some(entity) = entry.get("entity") {
+                    self.history.record(entity, level, requested_media);
+                }
             }
 
             notes.push(entry);
@@ -1004,15 +1082,25 @@ impl Tool for TopicScanTool {
             _ => json!({}),
         };
 
+        // Annotate cards in the search payload and selected_cards against
+        // the pre-call snapshot so flags reflect "known before this scan"
+        // rather than "known after this scan's own writes".
+        let mut search = search;
+        if let Some(cards) = search.get_mut("cards") {
+            history_snapshot.annotate_cards(cards);
+        }
+        let mut selected_cards = serde_json::to_value(
+            selected.iter().map(|c| (*c).clone()).collect::<Vec<_>>(),
+        )?;
+        history_snapshot.annotate_cards(&mut selected_cards);
+
         let payload = json!({
             "ok": search.get("ok").and_then(Value::as_bool).unwrap_or(false),
             "query": query,
             "depth": depth,
             "tab": tab_result,
             "search": search,
-            "selected_cards": serde_json::to_value(
-                selected.iter().map(|c| (*c).clone()).collect::<Vec<_>>()
-            )?,
+            "selected_cards": selected_cards,
             "notes": notes,
             "sampling": {
                 "max_deep_notes": profile.deep,
