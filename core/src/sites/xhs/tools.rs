@@ -878,7 +878,6 @@ struct ScanProfile {
 }
 
 fn scan_profile_for(depth: &str) -> ScanProfile {
-    // Mirrors `_SCAN_PROFILES` from socai/sites/xhs/tools.py.
     match depth.to_ascii_lowercase().as_str() {
         "quick" => ScanProfile {
             deep: 2,
@@ -1089,9 +1088,8 @@ impl Tool for TopicScanTool {
         if let Some(cards) = search.get_mut("cards") {
             history_snapshot.annotate_cards(cards);
         }
-        let mut selected_cards = serde_json::to_value(
-            selected.iter().map(|c| (*c).clone()).collect::<Vec<_>>(),
-        )?;
+        let mut selected_cards =
+            serde_json::to_value(selected.iter().map(|c| (*c).clone()).collect::<Vec<_>>())?;
         history_snapshot.annotate_cards(&mut selected_cards);
 
         let payload = json!({
@@ -1151,4 +1149,3 @@ fn sanitize_for_filename(value: &str) -> String {
         .take(48)
         .collect()
 }
-

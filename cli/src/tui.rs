@@ -1,6 +1,6 @@
 //! Interactive socai TUI — invoked by `socai tui` or by running `socai` with
-//! no arguments. Mirrors `socai/cli/repl.py`: slash completion, inline model
-//! picker, command history, Ctrl-C exit, Esc-cancellable sub-menus.
+//! no arguments: slash completion, inline model picker, command history,
+//! Ctrl-C exit, Esc-cancellable sub-menus.
 
 use std::borrow::Cow;
 use std::io::{self, IsTerminal};
@@ -466,7 +466,7 @@ fn env_model() -> Option<String> {
         .filter(|m| !m.is_empty())
 }
 
-// ---------- event rendering (matches Python prefix style) ------------------
+// ---------- event rendering ------------------------------------------------
 
 fn print_agent_event(event: &AgentEvent) {
     match event {

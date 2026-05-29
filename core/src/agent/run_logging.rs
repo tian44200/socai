@@ -1,5 +1,4 @@
-//! Persistent debug logging for one agent run. Direct port of
-//! `socai/agent/run_logging.py`.
+//! Persistent debug logging for one agent run.
 //!
 //! Writes (under the run dir):
 //! - `reasoning_log.jsonl`       — append-only event timeline
@@ -9,7 +8,7 @@
 
 // tool_result takes many fields (turn, sequence, tool_use_id, tool, input,
 // content, duration_s, result_summary, repeat_count, error). Plain function
-// args match the Python-style debug payload directly.
+// args match the persisted debug payload directly.
 #![allow(clippy::too_many_arguments)]
 
 use std::path::{Path, PathBuf};
@@ -55,9 +54,9 @@ pub fn default_runs_root() -> PathBuf {
     PathBuf::from(".socai/runs")
 }
 
-/// Allocate a unique run directory for the given task. Mirrors
-/// `make_run_dir` from Python: `agent_<YYYYMMDD_HHMMSS>_<slug>` with a
-/// numeric suffix if that name already exists.
+/// Allocate a unique run directory for the given task:
+/// `agent_<YYYYMMDD_HHMMSS>_<slug>` with a numeric suffix if that name already
+/// exists.
 pub fn make_run_dir(task: &str) -> PathBuf {
     let ts = Utc::now().format("%Y%m%d_%H%M%S").to_string();
     let slug = safe_slug(task, 48);

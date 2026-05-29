@@ -41,9 +41,7 @@ impl PageSession {
         self.page.target_id().inner()
     }
 
-    /// Navigate to `url` and wait for the load event. Mirrors Python
-    /// `PageSession.navigate(url, wait_until="domcontentloaded")` in spirit
-    /// — chromiumoxide's `wait_for_navigation` blocks until lifecycle "load".
+    /// Navigate to `url` and wait for DOM readiness.
     pub async fn navigate(&self, url: &str) -> anyhow::Result<()> {
         self.navigate_with_timeout(url, 15.0).await
     }
@@ -89,7 +87,8 @@ impl PageSession {
 
     /// Evaluate a JS snippet and deserialize its return value as
     /// `serde_json::Value`. The expression is wrapped in an IIFE when it
-    /// contains a top-level `return`, matching the Python ergonomics.
+    /// contains a top-level `return`, so callers can pass function-body style
+    /// snippets.
     pub async fn evaluate_json(&self, expression: &str) -> anyhow::Result<Value> {
         let wrapped = wrap_expression(expression);
         let result = self.page.evaluate(wrapped.as_str()).await?;
@@ -204,9 +203,9 @@ fn wrap_expression(expression: &str) -> String {
 }
 
 /// Detect a top-level `return` statement, skipping strings, line comments,
-/// and block comments. Direct port of the Python heuristic — handles the
-/// common case where the user writes multi-line JS with a `return` at the
-/// end and expects it to behave like a function body.
+/// and block comments. Handles the common case where the user writes
+/// multi-line JS with a `return` at the end and expects it to behave like a
+/// function body.
 ///
 /// Iterates by char index, not byte index, so multi-byte UTF-8 (e.g. the
 /// non-breaking space '\u{a0}' that appears in real-world JS bundles)

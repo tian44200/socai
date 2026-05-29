@@ -2,7 +2,6 @@
 //! analyzed (and at what level) in a project-local JSON file so the agent
 //! can skip repeats across separate runs.
 //!
-//! Simplified port of `socai/sites/xhs/history.py`:
 //! - In-run dedup still lives on `ToolContext::processed_notes`; this store
 //!   only handles cross-run persistence.
 //! - Schema is intentionally smaller — we keep `note_id`, `title`, `author`,

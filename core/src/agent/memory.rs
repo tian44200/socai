@@ -5,8 +5,7 @@
 //!   - the run-state context block (working memory render, capped)
 //!   - a condensed list of recent tool events
 //!
-//! Mirrors `_prepare_messages_for_context` and `_compact_memory_entries`
-//! from `socai/agent/loop.py`.
+//! This is deliberately deterministic and local — no extra summarizer call.
 
 use std::sync::Arc;
 

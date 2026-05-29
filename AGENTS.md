@@ -1,8 +1,8 @@
 # socai agent notes
 
-The repo has a legacy Python agent package (`socai/`), a Rust core (`core/`),
-a Rust CLI (`cli/`), and a Tauri 2 desktop app (`app/`). The Rust core is the
-active shared implementation for CLI/TUI/Tauri.
+The repo has a Rust core (`core/`), a Rust CLI (`cli/`), and a Tauri 2 desktop
+app (`app/`). The Rust core is the active shared implementation for
+CLI/TUI/Tauri.
 
 ## Rust core — `core/`
 
@@ -20,31 +20,16 @@ Entry point package for the `socai` binary. It depends
 on `socai-core`; keep CLI daemon/socket plumbing thin and keep browser/session
 ownership inside the core runtime.
 
-## Python package — `socai/`
-
-- `socai/agent/`: generic agent loop, LLM backends, run state, tool interface.
-- `socai/browser/cdp/`: CDP endpoint discovery, long-lived browser session,
-  page primitives, task tabs.
-- `socai/browser/tools/`: generic browser tools built on CDP page sessions.
-- `socai/sites/xhs/`: Xiaohongshu entities, JS extractors, runtime, site tools.
-- `socai/cli/`: entry point `uv run socai`. Submodules:
-  - `commands`: argparse dispatcher (`socai search_notes` / `topic_scan` /
-    `extract_note` / `stop`). No-args path falls through to the REPL.
-  - `repl`: interactive prompt-toolkit UI.
-  - `runner`: headless task runner (reused by REPL and the future Tauri host).
-  - `daemon` + `daemon_client`: long-lived process owning one browser "tool
-    tab" reused across CLI calls, exposed over `~/.socai/daemon.sock`.
-    Auto-spawns on first tool call, auto-shuts after 3h idle.
-
 Rules:
 
-- Keep one `BrowserTaskSessionManager` alive per app/CLI process; create a new
-  task tab per user task.
-- Keep JS extractors in a small JSON-returning contract; Python injects, calls,
+- Keep browser/session ownership inside `core/src/runtime/` and
+  `core/src/cdp/`; CLI daemon/socket plumbing should stay thin.
+- Keep JS extractors in a small JSON-returning contract; Rust injects, calls,
   and validates results.
-- Tool subcommands wrap existing `XhsRuntime` / site tools — don't duplicate
-  XHS logic in the daemon. Any cleanups to the public data shape go in
-  `sites/xhs/entities.py` and `sites/xhs/tools.py`, not in the daemon layer.
+- Tool subcommands wrap existing `XhsPageRuntime` / site tools — don't
+  duplicate XHS logic in the daemon. Any cleanups to the public data shape go
+  in `core/src/sites/xhs/entities.rs` and `core/src/sites/xhs/tools.rs`, not in
+  the daemon layer.
 
 ## Desktop app — `app/`
 

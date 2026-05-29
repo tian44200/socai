@@ -700,14 +700,14 @@ Claude Code (parent)
 **Cleanup on agent quit:** N/A — Chrome is the user's
 **Blast radius:** full — agent inherits all user's cookies/sessions
 
-### 6.4 Pattern D — Monolithic agent CLI (browser-use --task, socai REPL)
+### 6.4 Pattern D — Monolithic agent CLI (browser-use --task, socai TUI)
 
 ```
 zsh (your shell)
 │
-└── browser-use --task "..." OR uv run socai    ← Python process: the agent loop runs here
+└── browser-use --task "..." OR socai           ← agent loop runs in the CLI process
     │
-    └── chromium                                  ← Playwright (or chromiumoxide) spawns Chrome as child
+    └── chromium                                  ← browser runtime / CDP connection
         ├── renderer (tab 1)
         ├── GPU process
         └── network service
@@ -739,11 +739,9 @@ zsh (your shell)
 zsh or Finder (launcher)
 │
 └── socai.app (Tauri Rust shell)              ← the desktop product itself
-    ├── chromiumoxide CDP connection
-    │   └── Chrome process                     ← spawned and managed by Tauri
-    │       └── renderer / GPU / network
-    │
-    └── Python sidecar (when LLM agent ships)  ← agent loop, talks to Rust shell
+    └── socai-core runtime                     ← agent loop + CDP + site tools
+        └── Chrome CDP connection
+            └── renderer / GPU / network
 ```
 
 - Chrome lifetime = app window lifetime.
@@ -765,7 +763,7 @@ user-facing application.
 | State persistence | Disk + warm | Disk only | Disk (user's profile) | Disk (if user_data_dir set) | Disk + warm |
 | Process complexity | High | Medium | Low | Low | Medium |
 | Blast radius | Isolated profile | Isolated profile | **User's full profile** | Isolated profile | App's profile (your call) |
-| External agent friendly? | ✅ (CLI) | ✅ (MCP) | ✅ (Python or CLI) | ❌ (high per-call latency) | (only if exposed) |
+| External agent friendly? | ✅ (CLI) | ✅ (MCP) | ✅ (CLI/script) | ❌ (high per-call latency) | (only if exposed) |
 | Best for | Power users w/ long-running flows | Production agent installs | Personal use with logged-in sessions | One-shot terminal tasks | Consumer desktop product |
 
 ---
@@ -778,14 +776,11 @@ separate *agentless* tool CLI, which land in different patterns.
 
 ### 7.1 CLI agent mode — Pattern D (monolithic agent CLI)
 
-`uv run socai` with **no subcommand** drops into the interactive REPL (TUI), which
-is structurally a browser-use-style agent CLI:
-- Single Python process, owns `BrowserTaskSessionManager` (which holds
-  Chrome's CDP connection).
-- Interactive TUI — many tasks share one Chrome across the session.
-- Per AGENTS.md: *"create a new task tab per user task"* — each task gets
-  its own tab in the same Chrome.
-- The LLM agent loop runs **inside** the process. Dies when the user exits
+`socai` with **no subcommand** drops into the Rust interactive TUI, which is
+structurally a browser-use-style agent CLI:
+- Single Rust process owns `SocaiRuntime`, including Chrome's CDP connection.
+- Interactive TUI — many tasks can share the process-local runtime.
+- The LLM agent loop runs **inside** the process. It dies when the user exits
   the TUI.
 
 ### 7.2 CLI tool mode — Pattern A (detached daemon)
@@ -801,7 +796,7 @@ granularity (domain tool calls, not `click @e1`):
   3h idle, so Chrome stays warm across invocations (`socai stop` ends it early).
 - **No internal LLM loop.** The caller — a human, a script, or an external
   agent (Claude Code, Codex) — decides which tool to invoke. This *is* socai's
-  external-agent surface (see §7.4); `commands.py` names exactly that audience.
+  external-agent surface (see §7.4).
 - Like the TUI, the daemon attaches to the user's already-logged-in Chrome
   via `discover_existing_chrome_endpoint` rather than spawning a fresh
   Chromium — so its blast radius is the user's full profile (a Pattern C
@@ -810,10 +805,10 @@ granularity (domain tool calls, not `click @e1`):
 ### 7.3 Desktop mode — Pattern E (integrated product)
 
 The Tauri desktop app integrates everything:
-- Rust shell + chromiumoxide owns Chrome's CDP WebSocket.
-- Python sidecar (deferred until LLM agent phase) runs the agent loop.
+- Rust shell + socai-core own Chrome's CDP WebSocket, task state, site tools,
+  and the agent loop.
 - Chrome lives as long as the app window is open.
-- No MCP boundary; agent is part of the product, in-process IPC.
+- No MCP boundary; agent is part of the product.
 
 ### 7.4 Strategic differentiation
 
@@ -840,14 +835,14 @@ opens to do work."
   roadmaps.
 - **Profile model.** Fresh user-data-dir on every CLI run (safe, fresh
   state) or persistent profile by default (sticky logins)? Check current
-  behavior in `BrowserTaskSessionManager`.
+  behavior in `SocaiRuntime` / CDP endpoint discovery.
 - **Isolated-profile option?** socai *already* attaches to the user's daily
   Chrome by default (`discover_existing_chrome_endpoint`), so it's
   browser-harness-style out of the box — full blast radius included. The open
   question is the inverse: should socai *also* offer a fresh-Chromium /
   isolated-profile mode for users who want the safer default, or stay
   attach-only?
-- **Agent loop ownership.** socai ships its own loop in `socai/agent/`.
+- **Agent loop ownership.** socai ships its own loop in `core/src/agent/`.
   As external agent harnesses (Claude Code, Codex) grow more capable,
   will the integrated agent stay primary, or will users want socai's
   tools with their own loop?
@@ -910,9 +905,9 @@ Things worth verifying or exploring further when the topic comes up again.
   token efficiency on a representative page (login form, search results,
   Gmail inbox).
 
-- **socai profile-persistence behavior** — confirm whether
-  `BrowserTaskSessionManager` uses a fresh or persistent user-data-dir
-  by default.
+- **socai profile-persistence behavior** — confirm whether `SocaiRuntime` /
+  CDP endpoint discovery attaches to the user's existing browser profile or
+  launches an isolated profile by default.
 
 - **Where Anthropic computer-use and Microsoft Playwright MCP fit** —
   two paths not deeply covered. computer-use is purely vision-based

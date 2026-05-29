@@ -1,9 +1,8 @@
 //! Persistent per-run state for the agent loop.
 //!
-//! Mirrors `socai/agent/run_state.py` — same file layout under
-//! `<run_dir>/run_state/`, so a run produced by the Rust agent can be
-//! inspected with the same tooling that already understands the Python
-//! agent's output.
+//! Persists a stable file layout under `<run_dir>/run_state/`, so a run
+//! produced by the Rust agent can be inspected with tooling that understands
+//! the JSON shape.
 //!
 //! Files written:
 //! - `task.json`            — task + model + created_at
