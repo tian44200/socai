@@ -1,13 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-/// XHS note — wire-ready. Field order, names, and types match the JSON
-/// produced by `socai.sites.xhs.entities.XhsNote.to_dict()` exactly, so
-/// `jq -S` diffs between the two implementations stay clean.
+/// XHS note — wire-ready. Field order, names, and types match the public JSON
+/// shape used by run artifacts and app timelines.
 ///
 /// All normalization (strip URL fragment, clip hashtags to 12, image_count
 /// fallback to images.len()) is performed during parsing, so serializing
-/// directly with serde_json yields the same output Python's to_dict() does.
+/// directly with serde_json yields stable output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct XhsNote {
     pub note_id: String,
@@ -31,7 +30,7 @@ pub struct XhsNote {
     pub video: Value,
     pub extraction_level: String,
 
-    /// Python sets `note.wait_meta` and to_dict() renames it to `"wait"`.
+    /// Serialized as `"wait"` to keep the public note shape compact.
     #[serde(rename = "wait", skip_serializing_if = "Option::is_none", default)]
     pub wait_meta: Option<Value>,
 
@@ -41,9 +40,8 @@ pub struct XhsNote {
     pub stale_warning: Option<String>,
 }
 
-/// Author profile entity. Wire shape matches Python's
-/// `XhsAuthorProfile.to_dict()` exactly, including the derived `_value`
-/// integer fields produced by [`parse_count_text`].
+/// Author profile entity. Wire shape includes the derived `_value` integer
+/// fields produced by [`parse_count_text`].
 #[derive(Debug, Clone, Default)]
 pub struct XhsAuthorProfile {
     pub display_name: String,
@@ -99,7 +97,7 @@ impl XhsAuthorProfile {
 }
 
 /// Parse a Xiaohongshu count text like "1.2k", "3万", "1,234". Returns
-/// 0 on anything unparseable. Mirrors Python's `parse_count_text`.
+/// 0 on anything unparseable.
 pub fn parse_count_text(raw: &str) -> i64 {
     let value: String = raw.trim().to_lowercase().replace([',', '+'], "");
     if value.is_empty() {
@@ -177,8 +175,8 @@ impl Default for XhsNote {
             comments_count: String::new(),
             image_count: 0,
             images: Vec::new(),
-            // Python defaults video to {}, not null. Match that so the wire
-            // shape stays consistent for video-less notes.
+            // Keep video as {}, not null, so the wire shape stays consistent
+            // for video-less notes.
             video: Value::Object(Default::default()),
             extraction_level: "lite".into(),
             wait_meta: None,
@@ -187,9 +185,8 @@ impl Default for XhsNote {
     }
 }
 
-/// Drop the URL fragment, keep scheme/netloc/path/query intact. Matches
-/// Python's `urlsplit/urlunsplit`-based `normalize_url` for the URL shapes
-/// XHS actually emits (which never put '#' in path or query).
+/// Drop the URL fragment, keep scheme/netloc/path/query intact for the URL
+/// shapes XHS emits.
 pub(crate) fn normalize_url(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {

@@ -1,5 +1,4 @@
-//! Default system prompt for the agent loop. Ported from
-//! `socai/agent/loop.py::_BASE_SYSTEM_PROMPT`.
+//! Default system prompt for the agent loop.
 
 pub const BASE_SYSTEM_PROMPT: &str =
     "You are a computer-use agent. Use the provided tools when they help complete\n\

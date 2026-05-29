@@ -1,6 +1,6 @@
 //! LLM provider catalog + API key resolution.
 //!
-//! Key precedence (matches the Python implementation):
+//! Key precedence:
 //! 1. environment variables (`ANTHROPIC_API_KEY`, etc.)
 //! 2. `~/.socai/auth.json` — `{provider: {api_key: ...}}`
 
@@ -169,9 +169,9 @@ pub fn provider_has_key(provider: Provider) -> bool {
     load_api_key(provider).is_some()
 }
 
-/// Persist an API key to `~/.socai/auth.json`. Mirrors Python's
-/// `save_api_key`: refuses keys shorter than 8 chars, also sets
-/// `defaults.provider`, and chmods the file to 0600. Returns the path.
+/// Persist an API key to `~/.socai/auth.json`: refuses keys shorter than 8
+/// chars, also sets `defaults.provider`, and chmods the file to 0600. Returns
+/// the path.
 pub fn save_api_key(provider: Provider, api_key: &str) -> anyhow::Result<std::path::PathBuf> {
     let trimmed = api_key.trim();
     if trimmed.len() < 8 {
@@ -225,8 +225,8 @@ pub fn save_api_key(provider: Provider, api_key: &str) -> anyhow::Result<std::pa
 /// Persist `provider` + `model` as the new defaults in
 /// `~/.socai/auth.json`. Does not touch the api_key block — used by the
 /// TUI's `/model` command to remember the selection across runs.
-/// Mirrors Python's `defaults.provider` + `defaults.{provider}_model`
-/// convention so both implementations share one config file.
+/// Uses `defaults.provider` + `defaults.{provider}_model` so all Rust
+/// entrypoints share one config file.
 pub fn save_default_model(provider: Provider, model: &str) -> anyhow::Result<std::path::PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("could not resolve $HOME"))?;
     let path = home.join(".socai/auth.json");
@@ -291,7 +291,7 @@ pub fn list_available_providers() -> Vec<Provider> {
         .collect()
 }
 
-/// Pick a provider, mirroring `resolve_model_provider` in the Python code:
+/// Pick a provider:
 /// - explicit `provider` arg wins
 /// - else `SOCAI_LLM_PROVIDER`
 /// - else infer from `model` prefix

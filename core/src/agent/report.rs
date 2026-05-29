@@ -1,8 +1,6 @@
 //! Final-report enrichment. After the loop produces its `final_text`,
 //! walk the run-state artifact registry and append markdown image links
 //! for screenshots so the saved `report.md` is self-contained.
-//!
-//! Mirrors `_report_with_artifacts` in `socai/agent/loop.py`.
 
 use std::sync::Arc;
 

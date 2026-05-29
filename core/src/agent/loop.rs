@@ -261,7 +261,7 @@ pub async fn run_agent_with_events(
         // LLMResponse::to_assistant_blocks() so we can:
         // - drop [Thinking]-prefixed text from history
         // - truncate visible text to ASSISTANT_TEXT_MAX_CHARS, matching
-        //   Python's format_assistant_content (320 chars)
+        //   ASSISTANT_TEXT_MAX_CHARS (320 chars)
         let assistant_blocks = build_assistant_blocks(&response, &visible_texts);
         messages.push(Message::assistant_blocks(assistant_blocks));
 
@@ -583,8 +583,7 @@ fn tool_result_to_content(result: &ToolResult) -> Vec<ToolResultContent> {
         .collect()
 }
 
-/// Squash a tool_result for the chat history. Mirrors Python's
-/// `_summarize_result_blocks_for_history`:
+/// Squash a tool_result for the chat history:
 /// - text blocks → compressed JSON-aware truncation
 /// - image blocks → text placeholder. If a preceding text block contained
 ///   "Screenshot saved to <path>", the placeholder names that path so the
@@ -625,8 +624,7 @@ fn bound_content_for_history(content: &[ToolResultContent]) -> Vec<ToolResultCon
     vec![ToolResultContent::Text { text: combined }]
 }
 
-/// `"Screenshot saved to /tmp/x.png"` → `Some("/tmp/x.png")`. Mirrors
-/// `_screenshot_hint_from_text` from Python.
+/// `"Screenshot saved to /tmp/x.png"` → `Some("/tmp/x.png")`.
 fn extract_screenshot_hint(text: &str) -> Option<String> {
     let marker = "Screenshot saved to ";
     let idx = text.find(marker)?;
@@ -669,8 +667,7 @@ fn truncate_summary(text: &str, max_chars: usize) -> String {
 }
 
 /// Split assistant text blocks into (visible, thinking) by the `[Thinking] `
-/// prefix. Whitespace-only blocks are dropped from both buckets. Mirrors the
-/// Python `loop.py` slicing.
+/// prefix. Whitespace-only blocks are dropped from both buckets.
 fn split_thinking(text_blocks: &[String]) -> (Vec<String>, Vec<String>) {
     const PREFIX: &str = "[Thinking] ";
     let mut visible: Vec<String> = Vec::new();
@@ -689,10 +686,10 @@ fn split_thinking(text_blocks: &[String]) -> (Vec<String>, Vec<String>) {
     (visible, thinking)
 }
 
-/// Build the assistant message blocks for history. Truncates visible text
-/// to `ASSISTANT_TEXT_MAX_CHARS` (320 — same as Python) to keep history
-/// bounded over many turns. Drops `[Thinking]`-prefixed text since that's
-/// already surfaced as a Reasoning event.
+/// Build the assistant message blocks for history. Truncates visible text to
+/// `ASSISTANT_TEXT_MAX_CHARS` to keep history bounded over many turns. Drops
+/// `[Thinking]`-prefixed text since that's already surfaced as a Reasoning
+/// event.
 fn build_assistant_blocks(response: &LLMResponse, visible_texts: &[String]) -> Vec<Block> {
     use crate::agent::compaction::{truncate, ASSISTANT_TEXT_MAX_CHARS};
     let mut blocks: Vec<Block> = Vec::new();

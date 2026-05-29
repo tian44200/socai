@@ -1,6 +1,5 @@
-//! Shared text/JSON compaction helpers. Direct port of the Python equivalents
-//! in `socai/agent/backends.py` (`_compact_json_value`, `_compress_text_maybe_json`)
-//! and `socai/agent/run_state.py` (`_truncate`, `_compact_value`).
+//! Shared text/JSON compaction helpers used by agent history and run-state
+//! evidence summaries.
 //!
 //! These are used in two places:
 //! - Agent loop history (keep tool_result bodies bounded so context doesn't
@@ -14,8 +13,8 @@ pub const TOOL_RESULT_TEXT_MAX_CHARS: usize = 2200;
 pub const ASSISTANT_TEXT_MAX_CHARS: usize = 320;
 
 /// Trim a string to at most `max_chars` characters, suffixing
-/// `... [truncated]` when the original was longer. Mirrors Python's
-/// `_truncate`. Char-based, not byte-based, to keep UTF-8 safe.
+/// `... [truncated]` when the original was longer. Char-based, not byte-based,
+/// to keep UTF-8 safe.
 pub fn truncate(text: &str, max_chars: usize) -> String {
     let trimmed = text.trim();
     let count = trimmed.chars().count();
@@ -40,8 +39,7 @@ pub fn truncate_result(text: &str, max_chars: usize) -> String {
 }
 
 /// Reorder + truncate a JSON value so the most "interesting" keys come
-/// first and total size stays bounded. Mirrors `_compact_json_value` from
-/// Python (used in tool-result compression).
+/// first and total size stays bounded.
 pub fn compact_json_value(value: &Value) -> Value {
     let preferred = [
         "ok",
@@ -112,9 +110,9 @@ pub fn compress_text_maybe_json(text: &str, max_chars: usize) -> String {
     truncate_result(text, max_chars)
 }
 
-/// Entity-aware deep compaction with depth limit. Mirrors `_compact_value`
-/// from `run_state.py`. Used by the evidence/working-memory pipeline so
-/// that long tool outputs don't bloat the persisted snapshot.
+/// Entity-aware deep compaction with depth limit. Used by the
+/// evidence/working-memory pipeline so that long tool outputs don't bloat the
+/// persisted snapshot.
 pub fn compact_value(value: &Value) -> Value {
     compact_value_depth(value, 0)
 }

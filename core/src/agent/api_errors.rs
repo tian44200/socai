@@ -1,6 +1,4 @@
-//! Pretty-print provider HTTP errors. Mirrors
-//! `socai/agent/api_errors.py::format_api_error` but reads JSON bodies
-//! directly (we don't have an SDK exception object to introspect).
+//! Pretty-print provider HTTP errors from JSON response bodies.
 //!
 //! Surfaces, in this order: provider tag, status, top-level `error.message`,
 //! `error.code`, `error.type`, `error.param`, `request_id`. Falls back to

@@ -90,7 +90,7 @@ impl<'a> XhsPageRuntime<'a> {
     }
 
     /// Inject `page_scripts.js` (the IIFE that defines `SocaiXhsPageScripts`)
-    /// and call one of its functions. Mirrors Python's `xhs_page_script_call`.
+    /// and call one of its functions.
     pub async fn run_script(&self, name: &str, arg: Option<&Value>) -> Result<Value> {
         if !XHS_PAGE_SCRIPT_FUNCTIONS.contains(&name) {
             anyhow::bail!("Unknown XHS page script: {name}");
@@ -541,9 +541,8 @@ impl<'a> XhsPageRuntime<'a> {
     }
 
     /// Click the search-filter tab with the given label (e.g. "全部" / "图文").
-    /// Mirrors Python's two-phase implementation: JS finds the tab and
-    /// returns click coordinates, then we issue a CDP click and poll for the
-    /// new active tab.
+    /// JS finds the tab and returns click coordinates, then we issue a CDP
+    /// click and poll for the new active tab.
     pub async fn click_search_tab(&self, label: &str, wait_seconds: f64) -> Result<Value> {
         self.ensure_xhs(false).await?;
         let loc = self
@@ -722,9 +721,9 @@ impl<'a> XhsPageRuntime<'a> {
 
         let mut note = parse_note(&body, &options.level);
 
-        // Python falls back to the live page URL when the JS payload didn't
-        // populate body.url. Mirror that — one extra evaluate is cheap and
-        // keeps extraction stable across navigation styles.
+        // Fall back to the live page URL when the JS payload didn't populate
+        // body.url. One extra evaluate is cheap and keeps extraction stable
+        // across navigation styles.
         if note.url.is_empty() {
             if let Ok(href) = self.page.evaluate_json("location.href").await {
                 if let Some(s) = href.as_str() {
@@ -857,9 +856,8 @@ impl<'a> XhsPageRuntime<'a> {
     }
 }
 
-/// Parse the JS-side `body` payload into a wire-ready XhsNote. Performs the
-/// same normalization Python's `extract_note` + `XhsNote.to_dict()` do, all
-/// front-loaded so serde Serialize alone produces stable output.
+/// Parse the JS-side `body` payload into a wire-ready XhsNote. Performs all
+/// normalization up front so serde Serialize alone produces stable output.
 fn parse_note(body: &Value, level: &str) -> XhsNote {
     let s = |k: &str| {
         body.get(k)
@@ -875,7 +873,7 @@ fn parse_note(body: &Value, level: &str) -> XhsNote {
             arr.iter()
                 .filter_map(Value::as_str)
                 .filter(|s| !s.trim().is_empty())
-                .take(12) // Python clips at to_dict() time; we do it here so serde-Serialize matches.
+                .take(12)
                 .map(String::from)
                 .collect()
         })

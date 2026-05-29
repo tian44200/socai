@@ -1,20 +1,38 @@
 # Xiaohongshu Site Knowledge
 
-Xiaohongshu / 小红书 / XHS is a Chinese lifestyle social platform. Posts are
-called notes (笔记) and are usually image carousels or short videos with title,
-body text, hashtags, engagement counts, comments, and author/profile context.
+Xiaohongshu / 小红书 / XHS is a Chinese lifestyle social platform at
+https://www.xiaohongshu.com (default landing page:
+https://www.xiaohongshu.com/explore). Posts are called notes (笔记) and are
+usually image carousels or short videos with title, body text, hashtags,
+engagement counts, comments, and author/profile context.
 
-Use `xhs_*` tools once this toolkit is enabled. They drive the site through CDP
-card clicks and modal interactions instead of direct `/explore/<note_id>`
-navigation, which often triggers blocked, blank, app-only, or QR-code flows.
+## Browser Lock
+
+The browser is locked to Xiaohongshu; every task is an XHS task. Do not
+navigate to other websites. Drive the site through the XHS tools below
+instead of direct `/explore/<note_id>` navigation, which often triggers
+blocked, blank, app-only, or QR-code flows. Reply in the same language as the
+user's task and ground your answer in tool output.
+
+## Tools
+
+`search_notes`, `extract_search_cards`, `list_search_tabs`,
+`click_search_tab`, `open_note`, `close_note`, `read_note`, `extract_note`,
+`extract_comments`, `scroll_in_note`, `collect_carousel_images`,
+`extract_profile`, `topic_scan`, `page_state`.
+
+Prefer `topic_scan` for any "research a topic" task — it bundles search,
+sample, and read in one call. For one-off lookups: `page_state` →
+`search_notes` → `read_note` (or `open_note` + `extract_note` +
+`extract_comments`). Close any open note modal before searching again.
 
 ## Anti-Bot Rules
 
-- Prefer `xhs_search_notes` from the homepage or any non-XHS tab; it navigates
+- Prefer `search_notes` from the homepage or any non-XHS tab; it navigates
   to XHS and submits the search like a user.
 - Do not navigate directly to `/explore/<note_id>` unless no card-click path is
-  available. Open notes from search/profile cards with `xhs_read_note`.
-- Close note modals with `xhs_close_note`, Escape, or the close button. Do not
+  available. Open notes from search/profile cards with `read_note`.
+- Close note modals with `close_note`, Escape, or the close button. Do not
   reload the page just to close a note.
 - If a page shows QR/app-only prompts, captcha, security verification, 404/blank
   direct-detail routes, or "page unavailable" copy, stop retrying that URL and
@@ -23,13 +41,13 @@ navigation, which often triggers blocked, blank, app-only, or QR-code flows.
 
 ## Page States
 
-- `homepage`: left navigation and top search input. Use `xhs_search_notes`.
+- `homepage`: left navigation and top search input. Use `search_notes`.
 - `search_results`: query input, tabs `全部` / `图文` / `视频` / `用户`, waterfall
   note cards with cover, title, author, likes, and type.
 - `note_detail`: modal or full detail. Left side is carousel/video, right side
   is author, title/body, hashtags, comments, and engagement bar.
 - `profile_page`: author avatar/name/XHS ID/bio/stats and note-card grid. Use
-  `xhs_extract_profile`; scroll loads more cards.
+  `extract_profile`; scroll loads more cards.
 
 ## Entity Fields
 
@@ -52,20 +70,20 @@ Video fields: `url`, `resolved_url`, `poster_url`, optional `transcript`,
 
 ## Workflows
 
-- Topic research: call `xhs_topic_scan(query=..., depth="standard")`. It
+- Topic research: call `topic_scan(query=..., depth="standard")`. It
   searches, optionally switches tab, samples visible cards in page order,
   writes artifacts, closes note modals, and marks already analyzed posts.
-- Quick breadth scan: use `xhs_search_notes` or `xhs_extract_search_cards` to
+- Quick breadth scan: use `search_notes` or `extract_search_cards` to
   inspect cards without opening notes.
-- Manual note read: use `xhs_read_note(index=N)` or `xhs_read_note(note_id=...)`.
+- Manual note read: use `read_note(index=N)` or `read_note(note_id=...)`.
   Use `level="card"` for metadata only, `level="lite"` for body/comments, and
   `level="deep"` plus `include_media=true` only when images, OCR, video, or
   visual evidence materially matters.
-- Creator analysis: navigate/open a profile, then use `xhs_extract_profile`.
+- Creator analysis: navigate/open a profile, then use `extract_profile`.
   Keep creator inventory/style analysis separate from keyword/topic sampling
   unless the user explicitly asks for both.
-- Comment sentiment: use lite/deep note reads first; call `xhs_scroll_in_note`
-  then `xhs_extract_comments` when more visible comments are needed.
+- Comment sentiment: use lite/deep note reads first; call `scroll_in_note`
+  then `extract_comments` when more visible comments are needed.
 - Media-heavy tasks: use deep reads sparingly. OCR, vision, transcription, and
   frame extraction depend on optional local/cloud capabilities and can be slow.
 
@@ -84,8 +102,12 @@ Video fields: `url`, `resolved_url`, `poster_url`, optional `transcript`,
 - Preserve real XHS post links from cards when available, including
   `xsec_token` query parameters. Fall back to bare `/explore/<note_id>` only
   when no real tokenized URL exists.
-- Treat `already_analyzed` on cards as a signal to avoid repeated reads unless
-  the user asks to refresh, compare history, or deepen the previous level.
+- Cards carry `already_analyzed` / `history_level` / `history_include_media`
+  flags when a prior run already read them. `read_note` and `topic_scan`
+  short-circuit notes already covered at the requested level and media
+  setting — the returned payload has `skipped: true` plus the prior
+  `history` entry. To deepen prior analysis, request a higher `level` (e.g.
+  `deep` after a `lite`) or set `include_media: true`.
 - Keep DOM text, comment evidence, image OCR/vision, and video transcript/frame
   evidence labeled separately in final answers.
 - If a read returns a stale-note warning or note-id mismatch, close the current
