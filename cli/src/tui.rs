@@ -4,7 +4,7 @@
 
 use std::borrow::Cow;
 use std::io::{self, IsTerminal};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use inquire::{Select, Text};
@@ -19,6 +19,7 @@ use socai_core::agent::{
     config_for, configured_default_model_for, provider_credential_kind, resolve_provider,
     save_api_key, save_default_model, AgentEvent, Backend, CredentialKind, Provider, PROVIDERS,
 };
+use socai_core::agent::{local_agent_tools, make_run_dir, Session};
 use socai_core::runtime::{
     create_llm_provider, run_agent_task as run_agent_with_tools, AgentRunConfig, SocaiRuntime,
 };
@@ -31,16 +32,35 @@ const PROVIDER_ORDER: &[Provider] = &[
     Provider::Anthropic,
 ];
 
+// Autocomplete-visible slash commands. `/new` is an alias of `/clear` handled
+// in dispatch but intentionally omitted here so only `/clear` is suggested.
 const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("model", "Choose the active LLM model"),
+    ("clear", "Clear the chat and start a new session"),
     ("exit", "Exit the TUI"),
 ];
 
-const TUI_AGENT_PREAMBLE: &str = "You are running inside the Socai TUI.";
+const TUI_AGENT_PREAMBLE: &str =
+    "You are running inside the Socai TUI as a conversational, multi-turn agent. \
+     Besides the Xiaohongshu site tools you have local environment tools: \
+     `read_file` (read text, or view image/screenshot artifacts) and `bash` (run \
+     shell commands to write files, list/grep artifacts, etc.). Maintain \
+     continuity with earlier turns in this chat. When the user asks you to save \
+     or export something, write it with bash in the format they want. Stay within \
+     the files relevant to the task and the user's ~/.socai data — do not run \
+     destructive, networked, or system-wide commands.";
 
-#[derive(Default)]
 struct AppState {
     model: Option<String>,
+    session: Session,
+}
+
+/// Live snapshot of an in-flight run, updated off the event stream so an
+/// interrupted turn can still be recorded with its run_id + partial answer.
+#[derive(Default)]
+struct LiveTurn {
+    run_id: String,
+    assistant: String,
 }
 
 // ---------- rustyline helper: slash completion -----------------------------
@@ -78,19 +98,30 @@ impl Hinter for SocaiHelper {
     type Hint = String;
 
     fn hint(&self, line: &str, pos: usize, _ctx: &rustyline::Context<'_>) -> Option<String> {
-        // Inline ghost suggestion for slash commands — only when cursor is at
-        // the end of a single-line buffer that starts with '/'.
+        // Slash-command hint — only when the cursor is at the end of a
+        // single-line buffer that starts with '/'.
         if pos != line.len() || !line.starts_with('/') || line.contains(' ') {
             return None;
         }
         let prefix = line.trim_start_matches('/');
-        for (name, desc) in SLASH_COMMANDS {
-            if name.starts_with(prefix) && prefix.len() < name.len() {
-                let rest = &name[prefix.len()..];
-                return Some(format!("{rest}  — {desc}"));
+        let matches: Vec<&(&str, &str)> = SLASH_COMMANDS
+            .iter()
+            .filter(|(name, _)| name.starts_with(prefix))
+            .collect();
+        match matches.as_slice() {
+            [] => None,
+            // Exactly one match → inline completion ghost for the rest + desc.
+            [(name, desc)] => {
+                if prefix.len() < name.len() {
+                    Some(format!("{}  — {}", &name[prefix.len()..], desc))
+                } else {
+                    Some(format!("  — {desc}"))
+                }
             }
+            // Several match (e.g. just "/") → point at the interactive menu
+            // (Enter opens it) rather than cramming options into the hint.
+            _ => Some("  ↵ for command menu".to_string()),
         }
-        None
     }
 }
 impl Highlighter for SocaiHelper {
@@ -116,7 +147,11 @@ pub async fn run() -> Result<()> {
     ensure_any_llm_key().await?;
 
     let runtime = SocaiRuntime::new();
-    let mut state = AppState::default();
+    let session = Session::new(None).context("failed to create chat session")?;
+    let mut state = AppState {
+        model: None,
+        session,
+    };
 
     let mut editor = build_editor()?;
     print_header(&state)?;
@@ -141,14 +176,24 @@ pub async fn run() -> Result<()> {
         let _ = editor.add_history_entry(trimmed);
 
         if trimmed.starts_with('/') {
-            if handle_command(trimmed, &mut state).await? {
+            // A bare "/" opens the interactive, filterable command menu;
+            // a fully-typed command (e.g. "/clear") dispatches directly.
+            let command_line = if trimmed == "/" {
+                match slash_menu().await? {
+                    Some(name) => format!("/{name}"),
+                    None => continue, // Esc — back to the prompt
+                }
+            } else {
+                trimmed.to_string()
+            };
+            if handle_command(&command_line, &mut state).await? {
                 break;
             }
             print_header(&state)?;
             continue;
         }
 
-        if let Err(err) = run_agent_task(&runtime, trimmed, state.model.as_deref()).await {
+        if let Err(err) = run_agent_task(&runtime, trimmed, &mut state).await {
             eprintln!("[socai] error: {err:#}");
         }
     }
@@ -190,9 +235,10 @@ fn build_editor() -> Result<Editor<SocaiHelper, DefaultHistory>> {
 fn print_header(state: &AppState) -> Result<()> {
     println!("Current model: {}", active_model(state)?);
     println!(
-        "Enter your task description. Type / for commands (Tab to list). \
-         Alt+Enter for newline (Shift/Ctrl+Enter if your terminal supports it). \
-         Ctrl+C to exit."
+        "Chat with the agent — turns share context within a session. \
+         Type / then Enter for the command menu; /clear starts a new chat. \
+         Ctrl+C interrupts a running task (records it); Ctrl+C at the prompt exits. \
+         Alt+Enter for newline (Shift/Ctrl+Enter if your terminal supports it)."
     );
     Ok(())
 }
@@ -211,12 +257,51 @@ async fn handle_command(line: &str, state: &mut AppState) -> Result<bool> {
             handle_model_command(state, rest).await?;
             Ok(false)
         }
+        // `/new` is an undocumented alias of `/clear`.
+        "clear" | "new" => {
+            handle_clear_command(state)?;
+            Ok(false)
+        }
         "" => Ok(false),
         other => {
             eprintln!("[socai] unknown command: /{other}");
             Ok(false)
         }
     }
+}
+
+// ---------- interactive slash-command menu ---------------------------------
+
+/// Filterable command menu opened by typing a bare `/`. Returns the chosen
+/// command name (e.g. "clear"), or `None` on Esc. Typing narrows the list.
+async fn slash_menu() -> Result<Option<String>> {
+    let options: Vec<String> = SLASH_COMMANDS
+        .iter()
+        .map(|(name, desc)| format!("/{name}  — {desc}"))
+        .collect();
+    let chosen = tokio::task::spawn_blocking(move || {
+        Select::new("Command", options)
+            .with_help_message("type to filter · ↑/↓ to move · enter to run · esc to cancel")
+            .prompt_skippable()
+    })
+    .await
+    .context("slash menu thread panicked")??;
+    Ok(chosen.and_then(|label| {
+        label
+            .trim_start_matches('/')
+            .split_whitespace()
+            .next()
+            .map(str::to_string)
+            .filter(|name| !name.is_empty())
+    }))
+}
+
+// ---------- /clear (and its /new alias) ------------------------------------
+
+fn handle_clear_command(state: &mut AppState) -> Result<()> {
+    state.session = Session::new(state.model.clone()).context("failed to start a new session")?;
+    println!("[socai] chat cleared — new session {}", state.session.id);
+    Ok(())
 }
 
 // ---------- model picker ---------------------------------------------------
@@ -477,29 +562,101 @@ fn active_model(state: &AppState) -> Result<String> {
     Ok(configured_default_model_for(provider))
 }
 
-async fn run_agent_task(runtime: &SocaiRuntime, task: &str, model: Option<&str>) -> Result<()> {
-    let llm_provider = build_llm_provider(model).await?;
+async fn run_agent_task(runtime: &SocaiRuntime, task: &str, state: &mut AppState) -> Result<()> {
+    let llm_provider = build_llm_provider(state.model.as_deref()).await?;
     println!();
     println!("[socai] using {}", llm_provider.label());
-    println!("[socai] connecting browser...");
-    let page = runtime.ensure_site_page("xhs", XHS_HOME_URL).await?;
-    let tools = xhs_agent_tools(page, llm_provider.clone()).await?;
 
+    // Pin the run dir up front (instead of letting the loop allocate it) so an
+    // interrupted or failed turn still knows where partial artifacts live and
+    // can record itself for follow-ups.
+    let run_dir = make_run_dir(task);
+    let _ = std::fs::create_dir_all(&run_dir);
+
+    // Browser/network setup can fail (e.g. DNS ERR_NAME_NOT_RESOLVED). Record
+    // the turn even then, so a follow-up still knows what the user asked.
+    println!("[socai] connecting browser...");
+    let page = match runtime.ensure_site_page("xhs", XHS_HOME_URL).await {
+        Ok(page) => page,
+        Err(err) => {
+            state.session.record_turn(
+                task,
+                &format!("[turn did not run — browser/network error: {err:#}]"),
+                "",
+                &run_dir,
+            );
+            return Err(err);
+        }
+    };
+    let mut tools = xhs_agent_tools(page, llm_provider.clone()).await?;
+    tools.extend(local_agent_tools());
+
+    // Track run_id + latest assistant text live off the event stream so we can
+    // record a meaningful turn even if the run is interrupted mid-flight.
+    let live = Arc::new(Mutex::new(LiveTurn::default()));
+    let live_for_printer = live.clone();
     let (tx, mut rx) = tokio::sync::broadcast::channel::<AgentEvent>(256);
     let printer = tokio::spawn(async move {
         while let Ok(event) = rx.recv().await {
+            if let Ok(mut g) = live_for_printer.lock() {
+                match &event {
+                    AgentEvent::Started { run_id, .. } => g.run_id = run_id.clone(),
+                    AgentEvent::AssistantText { text, .. } => g.assistant = text.clone(),
+                    _ => {}
+                }
+            }
             print_agent_event(&event);
         }
     });
 
+    // Seed the conversation with prior turns and tell the agent which run dirs
+    // belong to this session so it can read back earlier artifacts.
+    let preamble = format!("{TUI_AGENT_PREAMBLE}\n\n{}", state.session.context_note());
     let config = AgentRunConfig {
-        extra_instructions: xhs_agent_instructions(TUI_AGENT_PREAMBLE),
+        extra_instructions: xhs_agent_instructions(&preamble),
         enabled_sites: vec!["xhs".to_string()],
+        seed_messages: state.session.chat_messages(),
+        run_dir: Some(run_dir.clone()),
         ..AgentRunConfig::default()
     };
-    let outcome = run_agent_with_tools(task, llm_provider, tools, config, tx).await;
+    // Race the agent against Ctrl+C so the user can interrupt a long run and
+    // ask a follow-up. (At the idle prompt, rustyline turns Ctrl+C into an exit
+    // instead — these two contexts don't overlap.)
+    let agent = run_agent_with_tools(task, llm_provider, tools, config, tx);
+    tokio::pin!(agent);
+    let outcome = tokio::select! {
+        outcome = &mut agent => outcome,
+        _ = tokio::signal::ctrl_c() => {
+            printer.abort();
+            let (run_id, partial) = live
+                .lock()
+                .map(|g| (g.run_id.clone(), g.assistant.clone()))
+                .unwrap_or_default();
+            let assistant = if partial.trim().is_empty() {
+                "[interrupted by user before producing an answer]".to_string()
+            } else {
+                format!("{}\n\n[interrupted by user]", partial.trim())
+            };
+            // Record the interrupted turn so a follow-up keeps its context.
+            state.session.record_turn(task, &assistant, &run_id, &run_dir);
+            println!("\n[socai] interrupted — recorded; ask a follow-up, or press Ctrl+C at the prompt to exit.");
+            return Ok(());
+        }
+    };
     let _ = printer.await;
-    let outcome = outcome.context("agent loop failed")?;
+    let outcome = match outcome.context("agent loop failed") {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            // Record the failed turn too, so its topic survives for follow-ups.
+            state.session.record_turn(
+                task,
+                &format!("[turn failed: {err:#}]"),
+                "",
+                &run_dir,
+            );
+            return Err(err);
+        }
+    };
 
     println!();
     println!("{}", outcome.final_text.trim());
@@ -510,6 +667,18 @@ async fn run_agent_task(runtime: &SocaiRuntime, task: &str, model: Option<&str>)
     );
     println!("[socai] run_dir={}", outcome.run_dir.display());
     println!();
+
+    // An API error surfaces as an Ok outcome whose final_text is the error.
+    // Record a short marker instead of dumping the whole provider message into
+    // the conversation seed.
+    let recorded = if outcome.final_text.starts_with("API error:") {
+        "[turn failed: LLM API error]".to_string()
+    } else {
+        outcome.final_text.clone()
+    };
+    state
+        .session
+        .record_turn(task, &recorded, &outcome.run_id, &outcome.run_dir);
     Ok(())
 }
 

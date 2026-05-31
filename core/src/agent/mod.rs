@@ -6,6 +6,7 @@
 
 pub mod api_errors;
 pub mod compaction;
+pub mod file_bash_tools;
 pub mod llm;
 pub mod r#loop;
 pub mod memory;
@@ -13,6 +14,7 @@ pub mod provider;
 pub mod report;
 pub mod run_logging;
 pub mod run_state;
+pub mod session;
 pub mod signature;
 pub mod system_prompt;
 pub mod tool;
@@ -27,9 +29,11 @@ pub use self::provider::{
     resolve_provider, save_api_key, save_default_model, Credential, CredentialKind, Provider,
     ProviderConfig, PROVIDERS,
 };
+pub use self::file_bash_tools::{local_agent_tools, BashTool, ReadFileTool};
 pub use self::r#loop::{run_agent, run_agent_with_events, AgentEvent, AgentOptions, AgentOutcome};
 pub use self::run_logging::{make_run_dir, RunDebugLogger};
 pub use self::run_state::{ArtifactRecord, RunState};
+pub use self::session::{default_sessions_root, Session, Turn};
 pub use self::tool::{
     EchoTool, ProcessedNote, SharedTool, Tool, ToolContext, ToolResult, ToolResultBlock,
 };
