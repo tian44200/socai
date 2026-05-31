@@ -99,6 +99,10 @@ pub struct AgentOptions {
     pub keep_recent_messages: usize,
     /// Memory budget for the condensed context_block.
     pub memory_max_chars: usize,
+    /// Prior chat-level messages to seed the conversation with, so a turn can
+    /// continue an ongoing multi-turn session. The current task is appended as
+    /// the final user message. Empty = a fresh, single-shot run.
+    pub seed_messages: Vec<Message>,
 }
 
 impl Default for AgentOptions {
@@ -111,6 +115,7 @@ impl Default for AgentOptions {
             enabled_sites: Vec::new(),
             keep_recent_messages: 12,
             memory_max_chars: 6000,
+            seed_messages: Vec::new(),
         }
     }
 }
@@ -153,7 +158,8 @@ pub async fn run_agent_with_events(
         ctx.enable_site(site.clone());
     }
 
-    let mut messages: Vec<Message> = vec![Message::user(task.to_string())];
+    let mut messages: Vec<Message> = options.seed_messages.clone();
+    messages.push(Message::user(task.to_string()));
 
     debug_log.event(
         "task_start",
@@ -373,9 +379,27 @@ pub async fn run_agent_with_events(
                 error.as_deref().unwrap_or(""),
             );
 
+            let mut history_content = bound_content_for_history(&result_content);
+            // Break tight loops: when the model fires the *same* call with the
+            // same args repeatedly, the bare result won't change its mind. Tell
+            // it explicitly to stop and work with what it already has.
+            if repeat_count >= 3 {
+                history_content.insert(
+                    0,
+                    ToolResultContent::Text {
+                        text: format!(
+                            "[Note: you have called {name} with these exact arguments \
+                             {repeat_count} times and the result is not changing. Stop \
+                             repeating this call. Proceed with the information you already \
+                             have — if something cannot be found, say so and complete the \
+                             task with what is available.]"
+                        ),
+                    },
+                );
+            }
             tool_result_blocks.push(Block::ToolResult {
                 tool_use_id: id.clone(),
-                content: bound_content_for_history(&result_content),
+                content: history_content,
             });
 
             context_memory.push(format!(
