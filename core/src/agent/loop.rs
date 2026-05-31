@@ -99,6 +99,10 @@ pub struct AgentOptions {
     pub keep_recent_messages: usize,
     /// Memory budget for the condensed context_block.
     pub memory_max_chars: usize,
+    /// Prior chat-level messages to seed the conversation with, so a turn can
+    /// continue an ongoing multi-turn session. The current task is appended as
+    /// the final user message. Empty = a fresh, single-shot run.
+    pub seed_messages: Vec<Message>,
 }
 
 impl Default for AgentOptions {
@@ -111,6 +115,7 @@ impl Default for AgentOptions {
             enabled_sites: Vec::new(),
             keep_recent_messages: 12,
             memory_max_chars: 6000,
+            seed_messages: Vec::new(),
         }
     }
 }
@@ -153,7 +158,8 @@ pub async fn run_agent_with_events(
         ctx.enable_site(site.clone());
     }
 
-    let mut messages: Vec<Message> = vec![Message::user(task.to_string())];
+    let mut messages: Vec<Message> = options.seed_messages.clone();
+    messages.push(Message::user(task.to_string()));
 
     debug_log.event(
         "task_start",

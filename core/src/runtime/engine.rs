@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::agent::{
     config_for, configured_default_model_for, load_provider_credential, resolve_provider,
     run_agent_with_events, AgentEvent, AgentOptions, AgentOutcome, AnthropicBackend, Backend,
-    OpenAICompatBackend, Provider, Tool,
+    Message, OpenAICompatBackend, Provider, Tool,
 };
 use crate::cdp::{BrowserEvent, Cdp, PageSession, PageSessionManager, StatusPayload, TargetInfo};
 use anyhow::{anyhow, Result};
@@ -199,6 +199,8 @@ pub struct AgentRunConfig {
     pub extra_instructions: String,
     pub enabled_sites: Vec<String>,
     pub run_dir: Option<PathBuf>,
+    /// Prior chat-level messages to continue a multi-turn session from.
+    pub seed_messages: Vec<Message>,
 }
 
 impl Default for AgentRunConfig {
@@ -211,6 +213,7 @@ impl Default for AgentRunConfig {
             extra_instructions: String::new(),
             enabled_sites: Vec::new(),
             run_dir: None,
+            seed_messages: Vec::new(),
         }
     }
 }
@@ -234,6 +237,7 @@ pub async fn run_agent_task(
         enabled_sites: config.enabled_sites,
         keep_recent_messages: config.keep_recent_messages,
         memory_max_chars: config.memory_max_chars,
+        seed_messages: config.seed_messages,
     };
     run_agent_with_events(task, llm_provider, tools, options, events_tx).await
 }
