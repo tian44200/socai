@@ -13,12 +13,6 @@ pub const XHS_HOME_URL: &str = "https://www.xiaohongshu.com/explore";
 
 const PAGE_SCRIPTS_JS: &str = include_str!("page_scripts.js");
 
-const SEARCH_AFTER_SUBMIT_SETTLE_MS: u64 = 1_000;
-const SEARCH_FILTER_PRE_OPEN_SETTLE_MS: u64 = 1_200;
-const SEARCH_FILTER_HOVER_SETTLE_MS: u64 = 350;
-const SEARCH_FILTER_BEFORE_CLICK_MS: u64 = 300;
-const SEARCH_FILTER_AFTER_CLICK_MS: u64 = 900;
-
 const XHS_PAGE_SCRIPT_FUNCTIONS: &[&str] = &[
     "note",
     "noteWithWait",
@@ -212,7 +206,6 @@ impl<'a> XhsPageRuntime<'a> {
 
         sleep_ms(150).await;
         self.page.press_key("Enter").await?;
-        sleep_ms(SEARCH_AFTER_SUBMIT_SETTLE_MS).await;
         let state = self
             .wait_for_search_transition(query, wait_seconds.clamp(0.2, 6.0))
             .await?;
@@ -230,7 +223,6 @@ impl<'a> XhsPageRuntime<'a> {
             let y = number(submit, "y");
             if x > 0.0 && y > 0.0 {
                 self.page.click(x, y).await?;
-                sleep_ms(SEARCH_AFTER_SUBMIT_SETTLE_MS).await;
                 let state = self
                     .wait_for_search_transition(query, wait_seconds.clamp(0.2, 6.0))
                     .await?;
@@ -648,7 +640,6 @@ impl<'a> XhsPageRuntime<'a> {
         }
         self.wait_for_search_page_settled(wait_seconds.max(2.0))
             .await?;
-        sleep_ms(SEARCH_FILTER_PRE_OPEN_SETTLE_MS).await;
 
         let mut current = self.open_search_filter_panel(wait_seconds).await?;
         if !current.get("ok").and_then(Value::as_bool).unwrap_or(false) {
@@ -665,12 +656,10 @@ impl<'a> XhsPageRuntime<'a> {
                 self.close_search_filter_panel().await?;
                 return Ok(target);
             }
-            sleep_ms(SEARCH_FILTER_BEFORE_CLICK_MS).await;
             self.page
                 .click(number(&target, "x"), number(&target, "y"))
                 .await?;
             changed_filters = true;
-            sleep_ms(SEARCH_FILTER_AFTER_CLICK_MS).await;
             current = self.open_search_filter_panel(wait_seconds).await?;
             if !current.get("ok").and_then(Value::as_bool).unwrap_or(false) {
                 self.close_search_filter_panel().await?;
@@ -716,12 +705,10 @@ impl<'a> XhsPageRuntime<'a> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
             {
-                sleep_ms(SEARCH_FILTER_BEFORE_CLICK_MS).await;
                 self.page
                     .click(number(&target, "x"), number(&target, "y"))
                     .await?;
                 changed_filters = true;
-                sleep_ms(SEARCH_FILTER_AFTER_CLICK_MS).await;
             }
             current = self.open_search_filter_panel(wait_seconds).await?;
             if !current.get("ok").and_then(Value::as_bool).unwrap_or(false) {
@@ -817,11 +804,6 @@ impl<'a> XhsPageRuntime<'a> {
     async fn open_search_filter_panel(&self, wait_seconds: f64) -> Result<Value> {
         let visible = self.expect_object("searchFilters", None).await?;
         if visible.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-            sleep_ms(SEARCH_FILTER_HOVER_SETTLE_MS).await;
-            let settled = self.expect_object("searchFilters", None).await?;
-            if settled.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-                return Ok(settled);
-            }
             return Ok(visible);
         }
 
@@ -850,11 +832,6 @@ impl<'a> XhsPageRuntime<'a> {
         while Instant::now() < deadline {
             latest = self.expect_object("searchFilters", None).await?;
             if latest.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-                sleep_ms(SEARCH_FILTER_HOVER_SETTLE_MS).await;
-                let settled = self.expect_object("searchFilters", None).await?;
-                if settled.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-                    return Ok(settled);
-                }
                 return Ok(latest);
             }
             sleep_ms(120).await;
