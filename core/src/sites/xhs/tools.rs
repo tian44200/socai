@@ -137,12 +137,11 @@ pub async fn topic_scan_command(
     depth: &str,
     tab_label: Option<&str>,
     filters: Option<Value>,
-    reset_filters: bool,
 ) -> anyhow::Result<Value> {
     run_xhs_tool_command(
         page,
         TOPIC_SCAN_COMMAND,
-        topic_scan_input(query, depth, tab_label, filters.as_ref(), reset_filters)?,
+        topic_scan_input(query, depth, tab_label, filters.as_ref())?,
     )
     .await
 }
@@ -163,7 +162,6 @@ fn topic_scan_input(
     depth: &str,
     tab_label: Option<&str>,
     filters: Option<&Value>,
-    reset_filters: bool,
 ) -> anyhow::Result<Value> {
     let mut input = json!({
         "query": trimmed_required(query, "query")?,
@@ -172,9 +170,6 @@ fn topic_scan_input(
     insert_optional_str(&mut input, "tab_label", tab_label);
     if let Some(filters) = filters {
         input["filters"] = filters.clone();
-    }
-    if reset_filters {
-        input["reset_filters"] = Value::Bool(true);
     }
     Ok(input)
 }
@@ -1044,11 +1039,6 @@ impl Tool for TopicScanTool {
                     "enum": ["全部", "图文", "视频", "用户"]
                 },
                 "filters": search_filters_schema(),
-                "reset_filters": {
-                    "type": "boolean",
-                    "description": "Click reset before applying the requested filters",
-                    "default": false
-                },
                 "depth": {
                     "type": "string",
                     "enum": ["quick", "standard", "deep"],
@@ -1069,7 +1059,6 @@ impl Tool for TopicScanTool {
             .get("filters")
             .filter(|value| !value.is_null())
             .cloned();
-        let reset_filters = get_bool(&input, "reset_filters", false);
         let profile = scan_profile_for(&depth);
 
         let media = media_for(ctx, self.llm_provider.clone(), profile.include_media)?;
@@ -1092,9 +1081,7 @@ impl Tool for TopicScanTool {
 
         let mut filter_result = Value::Object(serde_json::Map::new());
         let cards: Vec<XhsNoteCard> = if let Some(filters) = filters {
-            filter_result = xhs
-                .apply_search_filters(&filters, reset_filters, 1.5)
-                .await?;
+            filter_result = xhs.apply_search_filters(&filters, false, 1.5).await?;
             if !filter_result
                 .get("ok")
                 .and_then(Value::as_bool)
@@ -1362,23 +1349,20 @@ mod tests {
             "sort": "最新",
             "publish_time": "一周内"
         });
-        let input =
-            topic_scan_input(" 胖丁 ", "quick", Some(" 视频 "), Some(&filters), true).unwrap();
+        let input = topic_scan_input(" 胖丁 ", "quick", Some(" 视频 "), Some(&filters)).unwrap();
 
         assert_eq!(input["query"], "胖丁");
         assert_eq!(input["depth"], "quick");
         assert_eq!(input["tab_label"], "视频");
         assert_eq!(input["filters"], filters);
-        assert_eq!(input["reset_filters"], true);
     }
 
     #[test]
     fn topic_scan_input_omits_absent_search_filters() {
-        let input = topic_scan_input("胖丁", "", Some(" "), None, false).unwrap();
+        let input = topic_scan_input("胖丁", "", Some(" "), None).unwrap();
 
         assert_eq!(input["depth"], "standard");
         assert!(input.get("tab_label").is_none());
         assert!(input.get("filters").is_none());
-        assert!(input.get("reset_filters").is_none());
     }
 }
