@@ -200,7 +200,7 @@ impl DaemonState {
             .and_then(Value::as_str)
             .unwrap_or("standard");
         let tab_label = args.get("tab_label").and_then(Value::as_str);
-        let filters = args.get("filters").cloned();
+        let filters = args.get("filters");
         let page = self.runtime.ensure_site_page("xhs", XHS_HOME_URL).await?;
         topic_scan_command(page, &query, depth, tab_label, filters).await
     }

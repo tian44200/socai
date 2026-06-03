@@ -136,12 +136,12 @@ pub async fn topic_scan_command(
     query: &str,
     depth: &str,
     tab_label: Option<&str>,
-    filters: Option<Value>,
+    filters: Option<&Value>,
 ) -> anyhow::Result<Value> {
     run_xhs_tool_command(
         page,
         TOPIC_SCAN_COMMAND,
-        topic_scan_input(query, depth, tab_label, filters.as_ref())?,
+        topic_scan_input(query, depth, tab_label, filters)?,
     )
     .await
 }
