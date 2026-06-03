@@ -638,8 +638,6 @@ impl<'a> XhsPageRuntime<'a> {
             };
             requested_filters.push((key.to_string(), label.to_string()));
         }
-        self.wait_for_search_page_settled(wait_seconds.max(2.0))
-            .await?;
 
         let mut current = self.open_search_filter_panel(wait_seconds).await?;
         if !current.get("ok").and_then(Value::as_bool).unwrap_or(false) {
@@ -737,10 +735,9 @@ impl<'a> XhsPageRuntime<'a> {
 
         self.close_search_filter_panel().await?;
         if changed_filters {
-            self.wait_for_search_page_settled(wait_seconds.max(3.0))
-                .await?;
-        } else if wait_seconds > 0.0 {
-            tokio::time::sleep(Duration::from_secs_f64(wait_seconds.min(6.0))).await;
+            if wait_seconds > 0.0 {
+                tokio::time::sleep(Duration::from_secs_f64(wait_seconds.min(4.0))).await;
+            }
         }
         let cards = self.extract_search_cards().await?;
         Ok(json!({
@@ -750,33 +747,6 @@ impl<'a> XhsPageRuntime<'a> {
             "count": cards.len(),
             "cards": cards,
         }))
-    }
-
-    async fn wait_for_search_page_settled(&self, timeout_s: f64) -> Result<()> {
-        let deadline = Instant::now() + Duration::from_secs_f64(timeout_s.max(0.5));
-        let mut stable_reads = 0;
-        while Instant::now() < deadline {
-            let state = self.expect_object("searchState", None).await?;
-            let loading = state
-                .get("loading")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let has_cards = state.get("card_count").and_then(Value::as_i64).unwrap_or(0) > 0;
-            let has_no_results = state
-                .get("has_no_results")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            if !loading && (has_cards || has_no_results) {
-                stable_reads += 1;
-                if stable_reads >= 3 {
-                    return Ok(());
-                }
-            } else {
-                stable_reads = 0;
-            }
-            sleep_ms(250).await;
-        }
-        Ok(())
     }
 
     /// Return a structured tool error when the current page is not a search
