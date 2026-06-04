@@ -608,59 +608,53 @@ impl<'a> XhsPageRuntime<'a> {
     /// available filter groups/options, then close the popup.
     pub async fn list_search_filters(&self, wait_seconds: f64) -> Result<Value> {
         self.ensure_xhs(false).await?;
-        if let Some(error) = self.search_results_only_error().await? {
-            return Ok(error);
-        }
         let filters = self.open_search_filter_panel(wait_seconds).await?;
         self.close_search_filter_panel().await?;
         Ok(filters)
     }
 
     /// Apply search-result filters from the hover popup and return the
-    /// refreshed visible cards.
-    pub async fn apply_search_filters(
-        &self,
-        filters: &Value,
-        reset: bool,
-        wait_seconds: f64,
-    ) -> Result<Value> {
+    /// current filter state.
+    pub async fn apply_search_filters(&self, filters: &Value, wait_seconds: f64) -> Result<Value> {
         self.ensure_xhs(false).await?;
-        if let Some(error) = self.search_results_only_error().await? {
-            return Ok(error);
-        }
         let Some(filter_obj) = filters.as_object() else {
-            return Ok(json!({
-                "ok": false,
-                "error": "filters_must_be_object",
-            }));
+            anyhow::bail!("filters must be object");
         };
-        sleep_ms(1000).await;
-        let mut requested_filters = Vec::new();
-        for (key, value) in filter_obj {
-            let Some(label) = value.as_str().map(str::trim).filter(|s| !s.is_empty()) else {
-                return Ok(json!({
-                    "ok": false,
-                    "error": "filter_option_must_be_string",
-                    "group": key,
-                }));
-            };
-            requested_filters.push((key.to_string(), label.to_string()));
+        if filter_obj.is_empty() {
+            anyhow::bail!("filters must include at least one selection");
         }
+        let target_filters = normalize_search_filter_targets(filter_obj)?;
+        // Let the initial search results settle before opening the hover-only
+        // filter panel; applying filters too early can leave old cards visible.
+        sleep_ms(1000).await;
 
         let mut current = self.open_search_filter_panel(wait_seconds).await?;
         if !current.get("ok").and_then(Value::as_bool).unwrap_or(false) {
             self.close_search_filter_panel().await?;
             return Ok(current);
         }
-
         let mut changed_filters = false;
-        if reset {
+        for (group_key, label) in target_filters {
             let target = self
-                .expect_object("searchFilterTarget", Some(&json!({ "action": "reset" })))
+                .expect_object(
+                    "searchFilterTarget",
+                    Some(&json!({
+                        "action": "option",
+                        "group": group_key,
+                        "label": label,
+                    })),
+                )
                 .await?;
             if !target.get("ok").and_then(Value::as_bool).unwrap_or(false) {
                 self.close_search_filter_panel().await?;
                 return Ok(target);
+            }
+            if target
+                .get("was_active")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                continue;
             }
             self.page
                 .click(number(&target, "x"), number(&target, "y"))
@@ -673,108 +667,47 @@ impl<'a> XhsPageRuntime<'a> {
             }
         }
 
-        let group_order: Vec<String> = current
-            .get("groups")
-            .and_then(Value::as_array)
-            .map(|groups| {
-                groups
-                    .iter()
-                    .filter_map(|group| group.get("key").and_then(Value::as_str))
-                    .map(String::from)
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut handled_groups = HashSet::new();
-        for group_key in group_order {
-            let Some((_, label)) = requested_filters.iter().find(|(key, _)| key == &group_key)
-            else {
-                continue;
-            };
-            handled_groups.insert(group_key.clone());
-
-            let target = self
-                .expect_object(
-                    "searchFilterTarget",
-                    Some(&json!({
-                        "action": "option",
-                        "group": group_key,
-                        "label": label,
-                    })),
-                )
-                .await?;
-            if !target.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-                self.close_search_filter_panel().await?;
-                return Ok(target);
-            }
-            if !target
-                .get("was_active")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                self.page
-                    .click(number(&target, "x"), number(&target, "y"))
-                    .await?;
-                changed_filters = true;
-            }
-            current = self.open_search_filter_panel(wait_seconds).await?;
-            if !current.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-                self.close_search_filter_panel().await?;
-                return Ok(current);
-            }
-        }
-
-        for (group_key, label) in &requested_filters {
-            if handled_groups.contains(group_key) {
-                continue;
-            }
-            let target = self
-                .expect_object(
-                    "searchFilterTarget",
-                    Some(&json!({
-                        "action": "option",
-                        "group": group_key,
-                        "label": label,
-                    })),
-                )
-                .await?;
-            self.close_search_filter_panel().await?;
-            return Ok(target);
-        }
-
         self.close_search_filter_panel().await?;
-        if changed_filters {
-            if wait_seconds > 0.0 {
-                tokio::time::sleep(Duration::from_secs_f64(wait_seconds.min(4.0))).await;
-            }
+        if changed_filters && wait_seconds > 0.0 {
+            tokio::time::sleep(Duration::from_secs_f64(wait_seconds.min(4.0))).await;
         }
-        let cards = self.extract_search_cards().await?;
         Ok(json!({
             "ok": true,
+            "changed": changed_filters,
             "filters": current,
-            "url": self.current_url().await?,
-            "count": cards.len(),
-            "cards": cards,
         }))
     }
 
-    /// Return a structured tool error when the current page is not a search
-    /// results page; filter controls only exist on `search_results`.
-    async fn search_results_only_error(&self) -> Result<Option<Value>> {
-        let state = self.expect_object("searchState", None).await?;
-        if state
-            .get("page_state")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            == "search_results"
-        {
-            Ok(None)
-        } else {
-            Ok(Some(json!({
-                "ok": false,
-                "error": "not_search_results",
-                "state": state,
-            })))
+    /// Reset search-result filters.
+    pub async fn reset_search_filters(&self, wait_seconds: f64) -> Result<Value> {
+        self.ensure_xhs(false).await?;
+        // Let the initial search results settle before opening the hover-only
+        // filter panel; resetting filters too early can leave old cards visible.
+        sleep_ms(1000).await;
+        let current = self.open_search_filter_panel(wait_seconds).await?;
+        if !current.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            self.close_search_filter_panel().await?;
+            return Ok(current);
         }
+
+        let target = self
+            .expect_object("searchFilterTarget", Some(&json!({ "action": "reset" })))
+            .await?;
+        if !target.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            self.close_search_filter_panel().await?;
+            return Ok(target);
+        }
+        self.page
+            .click(number(&target, "x"), number(&target, "y"))
+            .await?;
+        self.close_search_filter_panel().await?;
+        if wait_seconds > 0.0 {
+            tokio::time::sleep(Duration::from_secs_f64(wait_seconds.min(4.0))).await;
+        }
+        Ok(json!({
+            "ok": true,
+            "reset": true,
+        }))
     }
 
     /// Ensure the hover-only filter popup is visible and return its parsed
@@ -824,16 +757,17 @@ impl<'a> XhsPageRuntime<'a> {
     /// Close the filter popup, preferring the visible `收起` control and
     /// falling back to moving the mouse away from the popup trigger.
     async fn close_search_filter_panel(&self) -> Result<()> {
-        let target = self
+        if let Ok(target) = self
             .expect_object("searchFilterTarget", Some(&json!({ "action": "close" })))
             .await
-            .unwrap_or_else(|_| json!({ "ok": false }));
-        if target.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-            self.page
-                .click(number(&target, "x"), number(&target, "y"))
-                .await?;
-            sleep_ms(180).await;
-            return Ok(());
+        {
+            if target.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+                self.page
+                    .click(number(&target, "x"), number(&target, "y"))
+                    .await?;
+                sleep_ms(180).await;
+                return Ok(());
+            }
         }
         self.page.mouse_move(20.0, 20.0).await?;
         sleep_ms(120).await;
@@ -1102,6 +1036,41 @@ impl<'a> XhsPageRuntime<'a> {
     }
 }
 
+fn normalize_search_filter_targets(
+    input: &Map<String, Value>,
+) -> Result<Vec<(&'static str, String)>> {
+    let defaults = [
+        ("sort", "综合"),
+        ("note_type", "不限"),
+        ("publish_time", "不限"),
+        ("search_scope", "不限"),
+        ("distance", "不限"),
+    ];
+
+    for key in input.keys() {
+        if !defaults.iter().any(|(group, _)| *group == key.as_str()) {
+            anyhow::bail!("unsupported filter group: {key}");
+        }
+    }
+
+    defaults
+        .into_iter()
+        .map(|(group, default_label)| {
+            let label = match input.get(group) {
+                Some(value) => value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("filter option must be a non-empty string: {group}")
+                    })?,
+                None => default_label,
+            };
+            Ok((group, label.to_string()))
+        })
+        .collect()
+}
+
 /// Parse the JS-side `body` payload into a wire-ready XhsNote. Performs all
 /// normalization up front so serde Serialize alone produces stable output.
 fn parse_note(body: &Value, level: &str) -> XhsNote {
@@ -1278,15 +1247,15 @@ fn search_transition_ok(state: &Value, query: &str) -> bool {
     {
         return false;
     }
+    if state.get("card_count").and_then(Value::as_i64).unwrap_or(0) > 0 {
+        return true;
+    }
     if state
         .get("loading")
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
         return false;
-    }
-    if state.get("card_count").and_then(Value::as_i64).unwrap_or(0) > 0 {
-        return true;
     }
     state
         .get("has_no_results")

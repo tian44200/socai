@@ -47,10 +47,8 @@ pub fn xhs_tools_with_llm_provider(
         Arc::new(ListSearchTabsTool { page: page.clone() }),
         Arc::new(ClickSearchTabTool { page: page.clone() }),
         Arc::new(ListSearchFiltersTool { page: page.clone() }),
-        Arc::new(ApplySearchFiltersTool {
-            page: page.clone(),
-            history: history.clone(),
-        }),
+        Arc::new(ResetSearchFiltersTool { page: page.clone() }),
+        Arc::new(ApplySearchFiltersTool { page: page.clone() }),
         Arc::new(OpenNoteTool { page: page.clone() }),
         Arc::new(CloseNoteTool { page: page.clone() }),
         Arc::new(ReadNoteTool {
@@ -776,36 +774,51 @@ impl Tool for ListSearchFiltersTool {
 
     fn description(&self) -> &str {
         "Hover the Xiaohongshu search page's `筛选` control and list the \
-         currently available filter groups/options. Use this after \
-         `search_notes` and after any `click_search_tab`, because the filter \
-         panel changes when the active search tab changes."
+         current filter groups/options. Use this when you need to inspect \
+         available filters before applying them."
     }
 
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "wait_seconds": {
-                    "type": "number",
-                    "description": "Seconds to wait for the hover popup to appear",
-                    "default": 1.0
-                }
-            }
-        })
+        json!({"type": "object", "properties": {}})
     }
 
-    async fn call(&self, input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
-        let wait_seconds = get_f64(&input, "wait_seconds", 1.0);
+    async fn call(&self, _input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
         let xhs = XhsPageRuntime::new(&self.page);
-        let value = xhs.list_search_filters(wait_seconds).await?;
+        let value = xhs.list_search_filters(1.0).await?;
         Ok(json_result(&value))
     }
 }
 
-/// apply_search_filters(filters, reset?, wait_seconds?) -> {ok, filters, cards}
+/// reset_search_filters() -> {ok, reset}
+pub struct ResetSearchFiltersTool {
+    page: Arc<PageSession>,
+}
+
+#[async_trait]
+impl Tool for ResetSearchFiltersTool {
+    fn name(&self) -> &str {
+        "reset_search_filters"
+    }
+
+    fn description(&self) -> &str {
+        "Hover the Xiaohongshu search page's `筛选` control, reset active \
+         search filters to their defaults."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "properties": {}})
+    }
+
+    async fn call(&self, _input: Value, _ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+        let xhs = XhsPageRuntime::new(&self.page);
+        let value = xhs.reset_search_filters(1.0).await?;
+        Ok(json_result(&value))
+    }
+}
+
+/// apply_search_filters(filters) -> {ok, changed, filters}
 pub struct ApplySearchFiltersTool {
     page: Arc<PageSession>,
-    history: Arc<XhsHistoryStore>,
 }
 
 #[async_trait]
@@ -816,27 +829,18 @@ impl Tool for ApplySearchFiltersTool {
 
     fn description(&self) -> &str {
         "Hover the Xiaohongshu search page's `筛选` control and choose filter \
-         options from the current panel. Each group is single-select, but \
-         different groups can be combined. Call `list_search_filters` first \
-         after switching tabs so you only request groups/options that are \
-         currently visible."
+         options from the current panel. Groups omitted from `filters` are \
+         applied as their default options, so old choices from previous \
+         searches do not leak into the result. Each group is single-select, \
+         but different groups can be combined. Use `extract_search_cards` \
+         after applying filters to read the current cards."
     }
 
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "filters": search_filters_schema(),
-                "reset": {
-                    "type": "boolean",
-                    "description": "Click reset before applying the requested filters",
-                    "default": false
-                },
-                "wait_seconds": {
-                    "type": "number",
-                    "description": "Seconds to wait for the hover popup/results refresh",
-                    "default": 1.0
-                }
+                "filters": search_filters_schema()
             },
             "required": ["filters"]
         })
@@ -846,15 +850,8 @@ impl Tool for ApplySearchFiltersTool {
         let filters = input
             .get("filters")
             .ok_or_else(|| anyhow::anyhow!("missing filters"))?;
-        let reset = get_bool(&input, "reset", false);
-        let wait_seconds = get_f64(&input, "wait_seconds", 1.0);
         let xhs = XhsPageRuntime::new(&self.page);
-        let mut value = xhs
-            .apply_search_filters(filters, reset, wait_seconds)
-            .await?;
-        if let Some(cards) = value.get_mut("cards") {
-            self.history.annotate_cards(cards);
-        }
+        let value = xhs.apply_search_filters(filters, 1.0).await?;
         Ok(json_result(&value))
     }
 }
@@ -1060,37 +1057,7 @@ impl Tool for TopicScanTool {
 
         let mut filter_result = Value::Object(serde_json::Map::new());
         if let Some(filters) = filters {
-            filter_result = xhs.apply_search_filters(&filters, false, 1.5).await?;
-            if !filter_result
-                .get("ok")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                let mut search = search;
-                if let Some(cards) = search.get_mut("cards") {
-                    history_snapshot.annotate_cards(cards);
-                }
-                let payload = json!({
-                    "ok": false,
-                    "query": query,
-                    "tab": tab_result,
-                    "filters": filter_result,
-                    "search": search,
-                    "selected_cards": [],
-                    "notes": [],
-                    "sampling": {
-                        "num_notes": num_notes,
-                        "selected": 0,
-                        "comments_per_note": TOPIC_SCAN_COMMENTS,
-                        "include_media": include_media,
-                    },
-                    "timing": {
-                        "media": {},
-                    },
-                    "error": "filter_apply_failed",
-                });
-                return Ok(json_result(&payload));
-            }
+            filter_result = xhs.apply_search_filters(&filters, 1.5).await?;
         }
 
         // Every sampled note is read with the same extraction level (body +
@@ -1250,24 +1217,6 @@ impl Tool for TopicScanTool {
         // the pre-call snapshot so flags reflect "known before this scan"
         // rather than "known after this scan's own writes".
         let mut search = search;
-        if filter_result
-            .get("ok")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            if let Some(search_map) = search.as_object_mut() {
-                if let Some(cards) = filter_result.get("cards").cloned() {
-                    search_map.insert("cards".to_string(), cards);
-                }
-                if let Some(count) = filter_result.get("count").cloned() {
-                    search_map.insert("count".to_string(), count);
-                }
-                if let Some(url) = filter_result.get("url").cloned() {
-                    search_map.insert("url".to_string(), url);
-                }
-                search_map.insert("filtered".to_string(), Value::Bool(true));
-            }
-        }
         if let Some(cards) = search.get_mut("cards") {
             history_snapshot.annotate_cards(cards);
         }
@@ -1318,7 +1267,7 @@ impl Tool for TopicScanTool {
 fn search_filters_schema() -> Value {
     json!({
         "type": "object",
-        "description": "Search filter selections by group key. Use only options visible in the current search filter panel.",
+        "description": "Search filter selections by group key.",
         "properties": {
             "sort": {
                 "type": "string",
@@ -1341,6 +1290,7 @@ fn search_filters_schema() -> Value {
                 "enum": ["不限", "同城", "附近"]
             }
         },
+        "minProperties": 1,
         "additionalProperties": false
     })
 }

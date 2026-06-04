@@ -494,6 +494,7 @@ const SocaiXhsPageScripts = (() => {
         groups.push({
           key: group.key,
           title: group.title,
+          default: group.options[0] || '',
           active: options.find((option) => option.active)?.label || '',
           options,
         });
