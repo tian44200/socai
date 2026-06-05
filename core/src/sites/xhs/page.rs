@@ -609,6 +609,8 @@ impl<'a> XhsPageRuntime<'a> {
     /// Apply search-result filters from the hover popup and return the
     /// current filter state.
     pub async fn apply_search_filters(&self, filters: &Value, wait_seconds: f64) -> Result<Value> {
+        // Normalize filter targets so we can compare the desired active option with the current one,
+        // avoiding unnecessary clicks when they already match.
         let target_filters = normalize_search_filter_targets(filters)?;
         self.apply_search_filter_targets(&target_filters, wait_seconds)
             .await
@@ -676,9 +678,6 @@ impl<'a> XhsPageRuntime<'a> {
     /// Reset search-result filters.
     pub async fn reset_search_filters(&self, wait_seconds: f64) -> Result<Value> {
         self.ensure_xhs(false).await?;
-        // Let the initial search results settle before opening the hover-only
-        // filter panel; resetting filters too early can leave old cards visible.
-        sleep_ms(1000).await;
         let current = self.open_search_filter_panel(wait_seconds).await?;
         if !script_ok(&current) {
             self.close_search_filter_panel(None).await?;
