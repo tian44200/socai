@@ -304,37 +304,19 @@ const SocaiXhsPageScripts = (() => {
   const FILTER_TITLES = SEARCH_FILTER_GROUPS.map((g) => g.title);
   const FILTER_OPTIONS = Array.from(new Set(SEARCH_FILTER_GROUPS.flatMap((g) => g.options)));
 
-  function centerOf(rect) {
+  function elementCenter(el) {
+    const rect = el.getBoundingClientRect();
     return {
       x: Math.round(rect.left + rect.width / 2),
       y: Math.round(rect.top + rect.height / 2),
     };
   }
 
-  function elementCenter(el) {
-    const rect = el.getBoundingClientRect();
-    return centerOf(rect);
-  }
-
-  function colorLooksActive(value) {
-    const m = String(value || '').match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
-    if (!m) return false;
-    const [, r, g, b] = m.map(Number);
-    return r >= 200 && g <= 130 && b <= 150;
-  }
-
   function optionLooksActive(el) {
-    const cls = String(el.className || '');
-    const style = window.getComputedStyle(el);
-    return el.getAttribute('aria-selected') === 'true'
-      || el.getAttribute('aria-pressed') === 'true'
-      || el.getAttribute('data-active') === 'true'
-      || /\b(active|current|selected|checked)\b/i.test(cls)
-      || colorLooksActive(style.color)
-      || colorLooksActive(style.backgroundColor);
+    return /\bactive\b/.test(String(el.className || ''));
   }
 
-  function clickableOptionElement(el, label) {
+  function clickableTextElement(el, label) {
     let best = el;
     let cur = el;
     while (cur?.parentElement) {
@@ -357,28 +339,6 @@ const SocaiXhsPageScripts = (() => {
     ].filter(Boolean).join(' ')).replace(/\s+/g, '');
   }
 
-  function cacheSearchFilterTrigger(el, label) {
-    const rect = el.getBoundingClientRect();
-    const center = centerOf(rect);
-    window.__SOCAI_XHS_LAST_FILTER_TRIGGER = {
-      label,
-      x: center.x,
-      y: center.y,
-      at: Date.now(),
-    };
-    return center;
-  }
-
-  function cachedSearchFilterTrigger() {
-    const cached = window.__SOCAI_XHS_LAST_FILTER_TRIGGER;
-    if (!cached || Date.now() - Number(cached.at || 0) > 120000) return null;
-    const x = Number(cached.x);
-    const y = Number(cached.y);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-    if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return null;
-    return { x, y, label: cached.label || '筛选', cached: true };
-  }
-
   function findSearchFilterTrigger() {
     const candidates = [];
     const selector = 'button, a, div, span, [role="button"], [aria-label*="筛选"], [title*="筛选"]';
@@ -392,8 +352,8 @@ const SocaiXhsPageScripts = (() => {
       if (rect.height > 90) continue;
       if (rect.top > Math.min(360, innerHeight * 0.55)) continue;
       if (rect.left < innerWidth * 0.30) continue;
-      const exact = label === '筛选';
-      const starts = label.startsWith('筛选');
+      const exact = label === '筛选' || label === '已筛选';
+      const starts = label.startsWith('筛选') || label.startsWith('已筛选');
       const score = rect.left
         + (exact ? 3000 : 0)
         + (starts ? 1200 : 0)
@@ -408,12 +368,10 @@ const SocaiXhsPageScripts = (() => {
   function searchFilterTrigger() {
     const trigger = findSearchFilterTrigger();
     if (!trigger) {
-      const cached = cachedSearchFilterTrigger();
-      if (cached) return { ok: true, ...cached };
       return { ok: false, error: 'filter_trigger_not_found' };
     }
     const label = filterTriggerLabel(trigger) || text(trigger) || '筛选';
-    return { ok: true, label, ...cacheSearchFilterTrigger(trigger, label) };
+    return { ok: true, label, ...elementCenter(trigger) };
   }
 
   function panelScore(el) {
@@ -454,9 +412,17 @@ const SocaiXhsPageScripts = (() => {
       if (text(el) !== label) continue;
       const rect = el.getBoundingClientRect();
       if (rect.top < top || rect.top >= bottom) continue;
-      matches.push({ el, rect, area: rect.width * rect.height });
+      const style = window.getComputedStyle(el);
+      const opacity = Number(style.opacity);
+      const hidden = el.closest('[aria-hidden="true"]') ? 1 : 0;
+      const lowOpacity = Number.isFinite(opacity) && opacity < 0.01 ? 1 : 0;
+      const bound = el.closest('[data-hp-bound="1"]') ? 1 : 0;
+      matches.push({ el, rect, area: rect.width * rect.height, hidden, lowOpacity, bound });
     }
-    matches.sort((a, b) => b.area - a.area);
+    matches.sort((a, b) => (a.hidden - b.hidden)
+      || (a.lowOpacity - b.lowOpacity)
+      || (b.bound - a.bound)
+      || (b.area - a.area));
     return matches[0]?.el || null;
   }
 
@@ -481,7 +447,7 @@ const SocaiXhsPageScripts = (() => {
       for (const label of group.options) {
         const optionEl = findExactTextElement(panel, label, { top: rect.bottom - 6, bottom });
         if (!optionEl) continue;
-        const target = clickableOptionElement(optionEl, label);
+        const target = clickableTextElement(optionEl, label);
         const targetRect = target.getBoundingClientRect();
         options.push({
           label,
@@ -494,7 +460,6 @@ const SocaiXhsPageScripts = (() => {
         groups.push({
           key: group.key,
           title: group.title,
-          default: group.options[0] || '',
           active: options.find((option) => option.active)?.label || '',
           options,
         });
@@ -506,9 +471,8 @@ const SocaiXhsPageScripts = (() => {
     return {
       ok: true,
       groups,
-      available_groups: groups.map((group) => group.key),
-      reset: resetEl ? elementCenter(clickableOptionElement(resetEl, '重置')) : null,
-      close: closeEl ? elementCenter(clickableOptionElement(closeEl, '收起')) : null,
+      reset: resetEl ? elementCenter(clickableTextElement(resetEl, '重置')) : null,
+      close: closeEl ? elementCenter(clickableTextElement(closeEl, '收起')) : null,
     };
   }
 
@@ -518,11 +482,11 @@ const SocaiXhsPageScripts = (() => {
     const action = String(arg?.action || 'option');
     if (action === 'reset') {
       if (!panel.reset) return { ok: false, error: 'filter_reset_not_found', filters: panel };
-      return { ok: true, action, ...panel.reset, filters: panel };
+      return { ok: true, action, ...panel.reset };
     }
     if (action === 'close') {
       if (!panel.close) return { ok: false, error: 'filter_close_not_found', filters: panel };
-      return { ok: true, action, ...panel.close, filters: panel };
+      return { ok: true, action, ...panel.close };
     }
 
     const key = String(arg?.group || '').trim();
@@ -534,7 +498,7 @@ const SocaiXhsPageScripts = (() => {
         error: 'filter_group_not_available',
         group: key,
         label,
-        available_groups: panel.available_groups,
+        available_groups: panel.groups.map((item) => item.key),
         filters: panel,
       };
     }
@@ -549,7 +513,7 @@ const SocaiXhsPageScripts = (() => {
         filters: panel,
       };
     }
-    return { ok: true, action: 'option', group: key, label, was_active: option.active, x: option.x, y: option.y, filters: panel };
+    return { ok: true, action: 'option', group: key, label, was_active: option.active, x: option.x, y: option.y };
   }
 
   // ── card click / note open / note close ──────────────────────
