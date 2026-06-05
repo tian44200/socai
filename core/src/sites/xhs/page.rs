@@ -25,7 +25,6 @@ const XHS_PAGE_SCRIPT_FUNCTIONS: &[&str] = &[
     "clickSearchTab",
     "searchFilterTrigger",
     "searchFilters",
-    "searchFilterTarget",
     "clickCard",
     "closeNote",
     "noteOpen",
@@ -627,53 +626,50 @@ impl<'a> XhsPageRuntime<'a> {
         // Applying filters too early can leave old cards visible.
         sleep_ms(1000).await;
 
-        let mut current = self.open_search_filter_panel(wait_seconds).await?;
-        if !script_ok(&current) {
-            self.close_search_filter_panel().await?;
-            return Ok(current);
+        let initial_filters = self.open_search_filter_panel(wait_seconds).await?;
+        if !script_ok(&initial_filters) {
+            self.close_search_filter_panel(None).await?;
+            return Ok(initial_filters);
         }
         let mut changed_filters = false;
         for (group_key, label) in target_filters {
-            let target = self
-                .expect_object(
-                    "searchFilterTarget",
-                    Some(&json!({
-                        "action": "option",
-                        "group": group_key,
-                        "label": label,
-                    })),
-                )
-                .await?;
-            if !script_ok(&target) {
-                self.close_search_filter_panel().await?;
-                return Ok(target);
-            }
-            if target
-                .get("was_active")
+            let Some(option) = search_filter_option(&initial_filters, group_key, label) else {
+                self.close_search_filter_panel(Some(&initial_filters))
+                    .await?;
+                return Ok(json!({
+                    "ok": false,
+                    "error": "filter_option_not_found",
+                    "group": group_key,
+                    "label": label,
+                    "filters": initial_filters,
+                }));
+            };
+            if option
+                .get("active")
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
             {
                 continue;
             }
-            self.page
-                .click(number(&target, "x"), number(&target, "y"))
-                .await?;
+            let x = number(option, "x");
+            let y = number(option, "y");
+            self.page.click(x, y).await?;
             changed_filters = true;
-            current = self.open_search_filter_panel(wait_seconds).await?;
-            if !script_ok(&current) {
-                self.close_search_filter_panel().await?;
-                return Ok(current);
-            }
         }
 
-        self.close_search_filter_panel().await?;
+        let final_filters = self.expect_object("searchFilters", None).await?;
+        if !script_ok(&final_filters) {
+            self.close_search_filter_panel(None).await?;
+            return Ok(final_filters);
+        }
+        self.close_search_filter_panel(Some(&final_filters)).await?;
         if changed_filters && wait_seconds > 0.0 {
             tokio::time::sleep(Duration::from_secs_f64(wait_seconds.min(4.0))).await;
         }
         Ok(json!({
             "ok": true,
             "changed": changed_filters,
-            "filters": current,
+            "filters": final_filters,
         }))
     }
 
@@ -685,21 +681,22 @@ impl<'a> XhsPageRuntime<'a> {
         sleep_ms(1000).await;
         let current = self.open_search_filter_panel(wait_seconds).await?;
         if !script_ok(&current) {
-            self.close_search_filter_panel().await?;
+            self.close_search_filter_panel(None).await?;
             return Ok(current);
         }
 
-        let target = self
-            .expect_object("searchFilterTarget", Some(&json!({ "action": "reset" })))
-            .await?;
-        if !script_ok(&target) {
-            self.close_search_filter_panel().await?;
-            return Ok(target);
-        }
-        self.page
-            .click(number(&target, "x"), number(&target, "y"))
-            .await?;
-        self.close_search_filter_panel().await?;
+        let Some(target) = current.get("reset").filter(|value| !value.is_null()) else {
+            self.close_search_filter_panel(Some(&current)).await?;
+            return Ok(json!({
+                "ok": false,
+                "error": "filter_reset_not_found",
+                "filters": current,
+            }));
+        };
+        let x = number(target, "x");
+        let y = number(target, "y");
+        self.page.click(x, y).await?;
+        self.close_search_filter_panel(Some(&current)).await?;
         if wait_seconds > 0.0 {
             tokio::time::sleep(Duration::from_secs_f64(wait_seconds.min(4.0))).await;
         }
@@ -755,18 +752,16 @@ impl<'a> XhsPageRuntime<'a> {
 
     /// Close the filter popup, preferring the visible `收起` control and
     /// falling back to moving the mouse away from the popup trigger.
-    async fn close_search_filter_panel(&self) -> Result<()> {
-        if let Ok(target) = self
-            .expect_object("searchFilterTarget", Some(&json!({ "action": "close" })))
-            .await
+    async fn close_search_filter_panel(&self, filters: Option<&Value>) -> Result<()> {
+        if let Some(target) = filters
+            .and_then(|value| value.get("close"))
+            .filter(|value| !value.is_null())
         {
-            if script_ok(&target) {
-                self.page
-                    .click(number(&target, "x"), number(&target, "y"))
-                    .await?;
-                sleep_ms(180).await;
-                return Ok(());
-            }
+            let x = number(target, "x");
+            let y = number(target, "y");
+            self.page.click(x, y).await?;
+            sleep_ms(180).await;
+            return Ok(());
         }
         self.page.mouse_move(20.0, 20.0).await?;
         sleep_ms(120).await;
@@ -1071,6 +1066,18 @@ fn normalize_search_filter_targets(filters: &Value) -> Result<Vec<(String, Strin
             Ok((key.to_string(), label.to_string()))
         })
         .collect()
+}
+
+fn search_filter_option<'a>(filters: &'a Value, group_key: &str, label: &str) -> Option<&'a Value> {
+    filters
+        .get("groups")?
+        .as_array()?
+        .iter()
+        .find(|item| item.get("key").and_then(Value::as_str) == Some(group_key))?
+        .get("options")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|item| item.get("label").and_then(Value::as_str) == Some(label))
 }
 
 /// Parse the JS-side `body` payload into a wire-ready XhsNote. Performs all

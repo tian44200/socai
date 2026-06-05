@@ -387,46 +387,6 @@ const SocaiXhsPageScripts = (() => {
     };
   }
 
-  function searchFilterTarget(arg) {
-    const panel = searchFilters();
-    if (!panel.ok) return panel;
-    const action = String(arg?.action || 'option');
-    if (action === 'reset') {
-      if (!panel.reset) return { ok: false, error: 'filter_reset_not_found', filters: panel };
-      return { ok: true, action, ...panel.reset };
-    }
-    if (action === 'close') {
-      if (!panel.close) return { ok: false, error: 'filter_close_not_found', filters: panel };
-      return { ok: true, action, ...panel.close };
-    }
-
-    const key = String(arg?.group || '').trim();
-    const label = String(arg?.label || '').trim();
-    const group = panel.groups.find((item) => item.key === key);
-    if (!group) {
-      return {
-        ok: false,
-        error: 'filter_group_not_available',
-        group: key,
-        label,
-        available_groups: panel.groups.map((item) => item.key),
-        filters: panel,
-      };
-    }
-    const option = group.options.find((item) => item.label === label);
-    if (!option) {
-      return {
-        ok: false,
-        error: 'filter_option_not_found',
-        group: key,
-        label,
-        available_options: group.options.map((item) => item.label),
-        filters: panel,
-      };
-    }
-    return { ok: true, action: 'option', group: key, label, was_active: option.active, x: option.x, y: option.y };
-  }
-
   // ── card click / note open / note close ──────────────────────
   function findCardElement(arg) {
     const cards = $$('section.note-item, [data-note-id], .feeds-page .note-item');
@@ -991,7 +951,6 @@ const SocaiXhsPageScripts = (() => {
     clickSearchTab,
     searchFilterTrigger,
     searchFilters,
-    searchFilterTarget,
     clickCard,
     closeNote,
     noteOpen,
