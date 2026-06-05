@@ -159,7 +159,7 @@ impl<'a> XhsPageRuntime<'a> {
 
         self.ensure_xhs(true).await?;
         let submit = self.submit_search(keyword, wait_seconds).await?;
-        let ok = submit.get("ok").and_then(Value::as_bool).unwrap_or(false);
+        let ok = script_ok(&submit);
         let cards = if ok {
             self.extract_search_cards().await?
         } else {
@@ -182,7 +182,7 @@ impl<'a> XhsPageRuntime<'a> {
 
     pub async fn submit_search(&self, query: &str, wait_seconds: f64) -> Result<Value> {
         let loc = self.expect_object("searchInput", None).await?;
-        if !loc.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        if !script_ok(&loc) {
             return Ok(json!({
                 "ok": false,
                 "strategy": "search_input_unavailable",
@@ -200,11 +200,7 @@ impl<'a> XhsPageRuntime<'a> {
         let set_result = self
             .expect_object("setSearchInput", Some(&json!({ "query": query })))
             .await?;
-        if !set_result
-            .get("ok")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
+        if !script_ok(&set_result) {
             return Ok(json!({
                 "ok": false,
                 "strategy": "set_search_input_failed",
@@ -309,7 +305,7 @@ impl<'a> XhsPageRuntime<'a> {
         let target = self
             .expect_object("clickCard", Some(&Value::Object(click_arg.clone())))
             .await?;
-        if !target.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        if !script_ok(&target) {
             anyhow::bail!(
                 "Could not locate card to click for note {}: {}",
                 selected.note_id,
@@ -345,7 +341,7 @@ impl<'a> XhsPageRuntime<'a> {
         let retry = self
             .expect_object("clickCard", Some(&Value::Object(click_arg)))
             .await?;
-        if retry.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        if script_ok(&retry) {
             sleep_ms(180).await;
             self.page
                 .click(number(&retry, "x"), number(&retry, "y"))
@@ -406,11 +402,7 @@ impl<'a> XhsPageRuntime<'a> {
         }
 
         let close_btn = self.expect_object("closeNote", None).await?;
-        if close_btn
-            .get("ok")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
+        if script_ok(&close_btn) {
             self.page
                 .click(number(&close_btn, "x"), number(&close_btn, "y"))
                 .await?;
@@ -477,7 +469,7 @@ impl<'a> XhsPageRuntime<'a> {
         let mut open = None;
         if !note_id.is_empty() || index.is_some() {
             let opened = self.open_note(note_id, index, wait_seconds).await?;
-            if !opened.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            if !script_ok(&opened) {
                 return Ok(
                     json!({ "ok": false, "open": opened, "error": opened.get("error").and_then(Value::as_str).unwrap_or("open_failed") }),
                 );
@@ -569,7 +561,7 @@ impl<'a> XhsPageRuntime<'a> {
         let loc = self
             .expect_object("clickSearchTab", Some(&Value::String(label.to_string())))
             .await?;
-        let ok = loc.get("ok").and_then(Value::as_bool).unwrap_or(false);
+        let ok = script_ok(&loc);
         if !ok {
             let error = loc
                 .get("error")
@@ -632,12 +624,11 @@ impl<'a> XhsPageRuntime<'a> {
         if target_filters.is_empty() {
             anyhow::bail!("filter targets must include at least one selection");
         }
-        // Let the initial search results settle before opening the hover-only
-        // filter panel; applying filters too early can leave old cards visible.
+        // Applying filters too early can leave old cards visible.
         sleep_ms(1000).await;
 
         let mut current = self.open_search_filter_panel(wait_seconds).await?;
-        if !current.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        if !script_ok(&current) {
             self.close_search_filter_panel().await?;
             return Ok(current);
         }
@@ -653,7 +644,7 @@ impl<'a> XhsPageRuntime<'a> {
                     })),
                 )
                 .await?;
-            if !target.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            if !script_ok(&target) {
                 self.close_search_filter_panel().await?;
                 return Ok(target);
             }
@@ -669,7 +660,7 @@ impl<'a> XhsPageRuntime<'a> {
                 .await?;
             changed_filters = true;
             current = self.open_search_filter_panel(wait_seconds).await?;
-            if !current.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            if !script_ok(&current) {
                 self.close_search_filter_panel().await?;
                 return Ok(current);
             }
@@ -693,7 +684,7 @@ impl<'a> XhsPageRuntime<'a> {
         // filter panel; resetting filters too early can leave old cards visible.
         sleep_ms(1000).await;
         let current = self.open_search_filter_panel(wait_seconds).await?;
-        if !current.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        if !script_ok(&current) {
             self.close_search_filter_panel().await?;
             return Ok(current);
         }
@@ -701,7 +692,7 @@ impl<'a> XhsPageRuntime<'a> {
         let target = self
             .expect_object("searchFilterTarget", Some(&json!({ "action": "reset" })))
             .await?;
-        if !target.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        if !script_ok(&target) {
             self.close_search_filter_panel().await?;
             return Ok(target);
         }
@@ -718,16 +709,16 @@ impl<'a> XhsPageRuntime<'a> {
         }))
     }
 
-    /// Ensure the hover-only filter popup is visible and return its parsed
-    /// contents. If the trigger is off-screen, scroll to the top and retry.
+    /// Open the search filter panel and return the current filter state. If the
+    /// trigger is off-screen, scroll to the top and retry.
     async fn open_search_filter_panel(&self, wait_seconds: f64) -> Result<Value> {
         let visible = self.expect_object("searchFilters", None).await?;
-        if visible.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        if script_ok(&visible) {
             return Ok(visible);
         }
 
         let trigger = self.expect_object("searchFilterTrigger", None).await?;
-        let trigger = if trigger.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+        let trigger = if script_ok(&trigger) {
             trigger
         } else {
             self.page
@@ -737,7 +728,7 @@ impl<'a> XhsPageRuntime<'a> {
                 .await?;
             sleep_ms(120).await;
             let retry = self.expect_object("searchFilterTrigger", None).await?;
-            if !retry.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            if !script_ok(&retry) {
                 return Ok(retry);
             }
             retry
@@ -750,7 +741,7 @@ impl<'a> XhsPageRuntime<'a> {
         let mut latest = Value::Object(Map::new());
         while Instant::now() < deadline {
             latest = self.expect_object("searchFilters", None).await?;
-            if latest.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            if script_ok(&latest) {
                 return Ok(latest);
             }
             sleep_ms(120).await;
@@ -769,7 +760,7 @@ impl<'a> XhsPageRuntime<'a> {
             .expect_object("searchFilterTarget", Some(&json!({ "action": "close" })))
             .await
         {
-            if target.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            if script_ok(&target) {
                 self.page
                     .click(number(&target, "x"), number(&target, "y"))
                     .await?;
@@ -1303,6 +1294,10 @@ fn note_is_open(state: &Value) -> bool {
 
 fn number(value: &Value, key: &str) -> f64 {
     value.get(key).and_then(Value::as_f64).unwrap_or(0.0)
+}
+
+fn script_ok(value: &Value) -> bool {
+    value.get("ok").and_then(Value::as_bool).unwrap_or(false)
 }
 
 fn string_field(obj: &Map<String, Value>, key: &str) -> String {
