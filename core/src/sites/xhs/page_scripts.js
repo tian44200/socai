@@ -300,19 +300,27 @@ const SocaiXhsPageScripts = (() => {
   }
 
   // ── search filter popup (hover-triggered 筛选 panel) ─────────
-  const SEARCH_FILTER_GROUPS = [
-    { key: 'sort', title: '排序依据', options: ['综合', '最新', '最多点赞', '最多评论', '最多收藏'] },
-    { key: 'note_type', title: '笔记类型', options: ['不限', '视频', '图文'] },
-    { key: 'publish_time', title: '发布时间', options: ['不限', '一天内', '一周内', '半年内'] },
-    { key: 'search_scope', title: '搜索范围', options: ['不限', '已看过', '未看过', '已关注'] },
-    { key: 'distance', title: '位置距离', options: ['不限', '同城', '附近'] },
-  ];
+  // This script only reports the panel as the DOM presents it — each group's
+  // visible title plus its visible tags. The canonical key/option vocabulary
+  // lives Rust-side (XHS_SEARCH_FILTERS); keeping it out of here avoids two
+  // lists drifting apart.
 
   function findSearchFilterTrigger() {
-    const selector = '.search-layout__top > .filter, .search-layout__top [class~="filter"]';
-    for (const el of $$(selector)) {
-      if (!(el instanceof HTMLElement) || !isVisible(el)) continue;
-      if (text(el).includes('筛选')) return el;
+    // The 筛选 trigger sits in the results header normally, but when the
+    // 问点点 AI summary panel shows up for a query the layout shifts and the
+    // trigger moves into the AI section (`.filter.ai-chat-filter`). Try the
+    // header first, then progressively broaden so both layouts work; in every
+    // case require a visible, filter-classed element whose text is 筛选.
+    const selectors = [
+      '.search-layout__top > .filter, .search-layout__top [class~="filter"]',
+      '.search-layout [class~="filter"]',
+      '.ai-chat-filter, [class~="filter"]',
+    ];
+    for (const selector of selectors) {
+      for (const el of $$(selector)) {
+        if (!(el instanceof HTMLElement) || !isVisible(el)) continue;
+        if (text(el).includes('筛选')) return el;
+      }
     }
     return null;
   }
@@ -354,13 +362,12 @@ const SocaiXhsPageScripts = (() => {
     for (const groupEl of $$('.filters-wrapper .filters', panel)) {
       if (!(groupEl instanceof HTMLElement) || !isVisible(groupEl)) continue;
       const title = text($('span', groupEl));
-      const group = SEARCH_FILTER_GROUPS.find((item) => item.title === title);
-      if (!group) continue;
+      if (!title) continue;
       const options = [];
-      for (const label of group.options) {
-        const tag = $$('.tag-container .tags', groupEl)
-          .find((el) => el instanceof HTMLElement && isVisible(el) && text(el) === label);
-        if (!tag) continue;
+      for (const tag of $$('.tag-container .tags', groupEl)) {
+        if (!(tag instanceof HTMLElement) || !isVisible(tag)) continue;
+        const label = text(tag);
+        if (!label) continue;
         options.push({
           label,
           active: /\bactive\b/.test(String(tag.className || '')),
@@ -368,12 +375,7 @@ const SocaiXhsPageScripts = (() => {
         });
       }
       if (options.length) {
-        groups.push({
-          key: group.key,
-          title: group.title,
-          active: options.find((option) => option.active)?.label || '',
-          options,
-        });
+        groups.push({ title, options });
       }
     }
 

@@ -36,15 +36,21 @@ const XHS_PAGE_SCRIPT_FUNCTIONS: &[&str] = &[
     "profileCards",
 ];
 
-pub(crate) const XHS_SEARCH_FILTERS: &[(&str, &[&str])] = &[
+/// Single source of truth for the XHS search-filter vocabulary: canonical group
+/// `key`, the group's visible Chinese `title` (used to join against the DOM the
+/// page script reads), and the allowed option labels in panel order. The page
+/// script no longer carries this vocabulary — it just reports whatever tags it
+/// sees by title — so this table is the only place to keep in sync.
+pub(crate) const XHS_SEARCH_FILTERS: &[(&str, &str, &[&str])] = &[
     (
         "sort",
+        "排序依据",
         &["综合", "最新", "最多点赞", "最多评论", "最多收藏"],
     ),
-    ("note_type", &["不限", "视频", "图文"]),
-    ("publish_time", &["不限", "一天内", "一周内", "半年内"]),
-    ("search_scope", &["不限", "已看过", "未看过", "已关注"]),
-    ("distance", &["不限", "同城", "附近"]),
+    ("note_type", "笔记类型", &["不限", "视频", "图文"]),
+    ("publish_time", "发布时间", &["不限", "一天内", "一周内", "半年内"]),
+    ("search_scope", "搜索范围", &["不限", "已看过", "未看过", "已关注"]),
+    ("distance", "位置距离", &["不限", "同城", "附近"]),
 ];
 
 #[derive(Debug, Clone)]
@@ -150,7 +156,12 @@ impl<'a> XhsPageRuntime<'a> {
         self.expect_object("pageState", None).await
     }
 
-    pub async fn search_notes(&self, query: &str, wait_seconds: f64) -> Result<Value> {
+    pub async fn search_notes(
+        &self,
+        query: &str,
+        filters: Option<&Value>,
+        wait_seconds: f64,
+    ) -> Result<Value> {
         let keyword = query.trim();
         if keyword.is_empty() {
             anyhow::bail!("query is required");
@@ -159,6 +170,14 @@ impl<'a> XhsPageRuntime<'a> {
         self.ensure_xhs(true).await?;
         let submit = self.submit_search(keyword, wait_seconds).await?;
         let ok = script_ok(&submit);
+        // Apply any search-result filters before reading cards, so the returned
+        // page reflects the filtered feed.
+        let mut filter_result = Value::Object(Map::new());
+        if ok {
+            if let Some(filters) = filters {
+                filter_result = self.apply_search_filters(filters, wait_seconds).await?;
+            }
+        }
         let cards = if ok {
             self.extract_search_cards().await?
         } else {
@@ -172,6 +191,7 @@ impl<'a> XhsPageRuntime<'a> {
             "ok": ok,
             "query": keyword,
             "submit": submit,
+            "filters": filter_result,
             "url": self.current_url().await?,
             "count": cards.len(),
             "cards": cards,
@@ -628,11 +648,12 @@ impl<'a> XhsPageRuntime<'a> {
         // Applying filters too early can leave old cards visible.
         sleep_ms(1000).await;
 
-        let initial_filters = self.open_search_filter_panel(wait_seconds).await?;
-        if !script_ok(&initial_filters) {
+        let initial_raw = self.open_search_filter_panel(wait_seconds).await?;
+        if !script_ok(&initial_raw) {
             self.close_search_filter_panel(None).await?;
-            return Ok(initial_filters);
+            return Ok(initial_raw);
         }
+        let initial_filters = canonical_filter_state(&initial_raw);
         let mut changed_filters = false;
         for (group_key, label) in target_filters {
             let Some(option) = search_filter_option(&initial_filters, group_key, label) else {
@@ -659,11 +680,12 @@ impl<'a> XhsPageRuntime<'a> {
             changed_filters = true;
         }
 
-        let final_filters = self.expect_object("searchFilters", None).await?;
-        if !script_ok(&final_filters) {
+        let final_raw = self.expect_object("searchFilters", None).await?;
+        if !script_ok(&final_raw) {
             self.close_search_filter_panel(None).await?;
-            return Ok(final_filters);
+            return Ok(final_raw);
         }
+        let final_filters = canonical_filter_state(&final_raw);
         self.close_search_filter_panel(Some(&final_filters)).await?;
         if changed_filters && wait_seconds > 0.0 {
             tokio::time::sleep(Duration::from_secs_f64(wait_seconds.min(4.0))).await;
@@ -678,11 +700,12 @@ impl<'a> XhsPageRuntime<'a> {
     /// Reset search-result filters.
     pub async fn reset_search_filters(&self, wait_seconds: f64) -> Result<Value> {
         self.ensure_xhs(false).await?;
-        let current = self.open_search_filter_panel(wait_seconds).await?;
-        if !script_ok(&current) {
+        let current_raw = self.open_search_filter_panel(wait_seconds).await?;
+        if !script_ok(&current_raw) {
             self.close_search_filter_panel(None).await?;
-            return Ok(current);
+            return Ok(current_raw);
         }
+        let current = canonical_filter_state(&current_raw);
 
         let Some(target) = current.get("reset").filter(|value| !value.is_null()) else {
             self.close_search_filter_panel(Some(&current)).await?;
@@ -1040,7 +1063,7 @@ fn normalize_search_filter_targets(filters: &Value) -> Result<Vec<(String, Strin
     for key in input.keys() {
         if !XHS_SEARCH_FILTERS
             .iter()
-            .any(|(filter_key, _)| *filter_key == key.as_str())
+            .any(|(filter_key, _, _)| *filter_key == key.as_str())
         {
             anyhow::bail!("unsupported filter group: {key}");
         }
@@ -1048,7 +1071,7 @@ fn normalize_search_filter_targets(filters: &Value) -> Result<Vec<(String, Strin
 
     XHS_SEARCH_FILTERS
         .iter()
-        .map(|(key, options)| {
+        .map(|(key, _title, options)| {
             let label = match input.get(*key) {
                 Some(value) => value
                     .as_str()
@@ -1077,6 +1100,47 @@ fn search_filter_option<'a>(filters: &'a Value, group_key: &str, label: &str) ->
         .and_then(Value::as_array)?
         .iter()
         .find(|item| item.get("label").and_then(Value::as_str) == Some(label))
+}
+
+/// Re-key the raw filter panel reported by the page script — which only knows
+/// each group's visible Chinese `title` — into socai's canonical group `key`s,
+/// using [`XHS_SEARCH_FILTERS`] for the title↔key join and group order, and
+/// adding a per-group `active` summary. This is where the human-readable panel
+/// is tied back to the schema keys callers used; downstream lookups (and the
+/// reported `filters` payload) can then rely on `key`. Unknown groups/tags are
+/// passed through untouched in `options` so a page-side addition never silently
+/// drops, but only known titles get a canonical key.
+fn canonical_filter_state(raw: &Value) -> Value {
+    let mut out = raw.clone();
+    let Some(groups) = raw.get("groups").and_then(Value::as_array) else {
+        return out;
+    };
+    let canonical: Vec<Value> = XHS_SEARCH_FILTERS
+        .iter()
+        .filter_map(|(key, title, _options)| {
+            let group = groups
+                .iter()
+                .find(|g| g.get("title").and_then(Value::as_str) == Some(*title))?;
+            let active = group
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .find(|o| o.get("active").and_then(Value::as_bool).unwrap_or(false))
+                .and_then(|o| o.get("label").and_then(Value::as_str))
+                .unwrap_or("");
+            let mut group = group.clone();
+            if let Some(map) = group.as_object_mut() {
+                map.insert("key".to_string(), json!(key));
+                map.insert("active".to_string(), json!(active));
+            }
+            Some(group)
+        })
+        .collect();
+    if let Some(map) = out.as_object_mut() {
+        map.insert("groups".to_string(), Value::Array(canonical));
+    }
+    out
 }
 
 /// Parse the JS-side `body` payload into a wire-ready XhsNote. Performs all

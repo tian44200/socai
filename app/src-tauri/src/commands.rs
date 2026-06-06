@@ -64,7 +64,7 @@ pub async fn tool_search_notes(
 ) -> Result<Value, String> {
     require_connected(&runtime).await?;
     let page = temporary_page(&runtime, XHS_HOME_URL, "tool · search_notes").await?;
-    let result = search_notes_command(page.clone(), &query, false).await;
+    let result = search_notes_command(page.clone(), &query, None, false).await;
     close_page(page).await;
     result.map_err(|e| format!("{e:#}"))
 }

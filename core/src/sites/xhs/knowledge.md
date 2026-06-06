@@ -77,8 +77,8 @@ Video fields: `url`, `resolved_url`, `poster_url`, optional `transcript`,
   artifacts, closing note modals, and marking already analyzed posts. Default
   `num_notes` is 10.
 - Quick breadth scan: use `search_notes` (atomic — returns the first results
-  page's cards, no scrolling) or `extract_search_cards` to inspect cards
-  without opening notes.
+  page's cards, no scrolling; accepts optional `filters` to narrow the feed) or
+  `extract_search_cards` to inspect cards without opening notes.
 - Manual note read: use `read_note(index=N)` or `read_note(note_id=...)`.
   Use `level="card"` for metadata only, `level="lite"` for body/comments, and
   `level="deep"` plus `include_media=true` only when images, OCR, video, or

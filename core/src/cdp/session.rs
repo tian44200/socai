@@ -202,6 +202,7 @@ impl PageSession {
     }
 
     pub async fn mouse_move(&self, x: f64, y: f64) -> anyhow::Result<()> {
+        self.snapshot_before().await;
         self.page.move_mouse(Point::new(x, y)).await?;
         Ok(())
     }

@@ -131,12 +131,13 @@ const EXTRACT_NOTE_COMMAND: XhsCommandSpec = XhsCommandSpec {
 pub async fn search_notes_command(
     page: Arc<PageSession>,
     query: &str,
+    filters: Option<&Value>,
     debug_snapshot: bool,
 ) -> anyhow::Result<Value> {
     run_xhs_tool_command(
         page,
         SEARCH_NOTES_COMMAND,
-        search_notes_input(query)?,
+        search_notes_input(query, filters)?,
         debug_snapshot,
     )
     .await
@@ -173,11 +174,15 @@ pub async fn extract_note_command(
     .await
 }
 
-fn search_notes_input(query: &str) -> anyhow::Result<Value> {
-    Ok(json!({
+fn search_notes_input(query: &str, filters: Option<&Value>) -> anyhow::Result<Value> {
+    let mut input = json!({
         "query": trimmed_required(query, "query")?,
         "wait_seconds": 2.0,
-    }))
+    });
+    if let Some(filters) = filters {
+        input["filters"] = filters.clone();
+    }
+    Ok(input)
 }
 
 fn topic_scan_input(
@@ -213,6 +218,18 @@ async fn run_xhs_tool_command(
     debug_snapshot: bool,
 ) -> anyhow::Result<Value> {
     let (run_dir, ctx) = command_context(spec.command_name);
+    // Persist the full command input up front (best-effort) so a run is
+    // debuggable from its dir alone — including the exact args — even when the
+    // tool errors out partway.
+    let invocation = json!({
+        "command": spec.command_name,
+        "tool": spec.tool_name,
+        "input": input.clone(),
+    });
+    let _ = std::fs::create_dir_all(&ctx.run_dir);
+    if let Ok(bytes) = serde_json::to_vec_pretty(&invocation) {
+        let _ = std::fs::write(ctx.run_dir.join("command_input.json"), bytes);
+    }
     // Snapshot recording (when `--debug-snapshot` is on) wraps the whole
     // command — setup navigation, the tool's clicks/scrolls, and teardown. All
     // recorder machinery lives in the generic CDP layer; this is the only hook
@@ -228,6 +245,7 @@ async fn run_xhs_tool_command(
     Ok(json!({
         "command": spec.command_name,
         "run_dir": run_dir,
+        "input": invocation.get("input").cloned().unwrap_or(Value::Null),
         "data": data,
     }))
 }
@@ -386,8 +404,10 @@ impl Tool for SearchNotesTool {
     fn description(&self) -> &str {
         "Search Xiaohongshu for notes matching `query`. Atomic: submits the \
          search and returns the first results page's cards (id, title, author, \
-         image) without scrolling. Use this before `open_note` to pick which \
-         note to read; to research a topic in one call use `topic_scan`."
+         image) without scrolling. Optionally applies search-result `filters` \
+         (omitted groups reset to defaults); each group is single-select. Use \
+         this before `open_note` to pick which note to read; to research a topic \
+         in one call use `topic_scan`."
     }
 
     fn input_schema(&self) -> Value {
@@ -395,6 +415,7 @@ impl Tool for SearchNotesTool {
             "type": "object",
             "properties": {
                 "query": { "type": "string", "description": "Search query (Chinese works fine)" },
+                "filters": search_filters_schema(),
                 "wait_seconds": {
                     "type": "number",
                     "description": "Extra seconds to wait for cards to load",
@@ -409,9 +430,12 @@ impl Tool for SearchNotesTool {
         let query = get_str(&input, "query")
             .ok_or_else(|| anyhow::anyhow!("missing query"))?
             .to_string();
+        let filters = input.get("filters").filter(|value| !value.is_null()).cloned();
         let wait_seconds = get_f64(&input, "wait_seconds", 2.0);
         let xhs = XhsPageRuntime::new(&self.page);
-        let mut value = xhs.search_notes(&query, wait_seconds).await?;
+        let mut value = xhs
+            .search_notes(&query, filters.as_ref(), wait_seconds)
+            .await?;
         if let Some(cards) = value.get_mut("cards") {
             self.history.annotate_cards(cards);
         }
@@ -1048,7 +1072,9 @@ impl Tool for TopicScanTool {
         // labels its own freshly-read cards as `already_analyzed`.
         let history_snapshot = self.history.snapshot();
 
-        let search = xhs.search_notes(&query, 2.0).await?;
+        // Filters are applied after the optional tab switch below (tab switch
+        // re-runs the search and would drop them), so don't pass them here.
+        let search = xhs.search_notes(&query, None, 2.0).await?;
 
         // Optional tab switch (re-runs the search under the chosen tab), then
         // optional filter application.
@@ -1269,7 +1295,7 @@ impl Tool for TopicScanTool {
 fn search_filters_schema() -> Value {
     let properties: Map<String, Value> = XHS_SEARCH_FILTERS
         .iter()
-        .map(|(key, options)| {
+        .map(|(key, _title, options)| {
             (
                 key.to_string(),
                 json!({
